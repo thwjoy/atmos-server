@@ -162,3 +162,4 @@ cython_debug/
 #.idea/
 
 *_db
+EC2_stuff

@@ -1,16 +1,19 @@
 import asyncio
+import json
+import struct
 import websockets
 import ssl
 from test_RAG import OPENAI_API_KEY, RAGAutoComplete
 import os
+import base64
 
 # os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
-certfile = "/home/ubuntu/certs/myatmos_chain.crt"
-keyfile = "/home/ubuntu/certs/private.key"
+# certfile = "/home/ubuntu/certs/myatmos_chain.crt"
+# keyfile = "/home/ubuntu/certs/private.key"
 
-ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+# ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+# ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
 
 rag_system = RAGAutoComplete(doc_path=os.path.join("harry_potter_1_db", "harry_potter_1.txt"),
                              chroma_path="harry_potter_1_db",
@@ -44,6 +47,7 @@ async def echo(websocket, path):
                 print("Score %.3f" % chunk_data["chunks_scores"])
                 print("Audio data:", chunk_data["audio_db"][0])
 
+                # Open and encode the audio file in base64
                 with open(chunk_data["audio_db"][0]['audio'], 'rb') as file:
                     file_data = file.read()
 
@@ -54,10 +58,20 @@ async def echo(websocket, path):
 
                 }
 
-                # TODO send the audio as well
-                payload = chunk_data["audio_db"][0]['prompt']
+                # payload = {
+                #     "audio": file_data,
+                #     "metadata": metadata
+                # }
+                metadata_json = json.dumps(metadata).encode('utf-8')
 
-            await websocket.send(f"Text quote: {payload}")
+                # Create the payload (4-byte metadata length + metadata + binary file data)
+                metadata_len = struct.pack('>I', len(metadata_json))
+                payload = metadata_len + metadata_json + file_data
+
+                total_size = len(metadata_len) + len(metadata_json) + len(file_data)
+                print(f"Total size of data to send: {total_size} bytes. Metadata len: {len(metadata_json)}")
+
+            await websocket.send(payload)
 
     except websockets.ConnectionClosed as e:
         print(f"Connection closed with code {e.code}, reason: {e.reason}")
@@ -99,7 +113,7 @@ def handle_audio_chunk(message):
 
 # Start the WebSocket server
 async def start_server():
-    async with websockets.serve(echo, "0.0.0.0", 5001, ssl=ssl_context):
+    async with websockets.serve(echo, "0.0.0.0", 5001, ssl=None):
         print("WebSocket server started on ws://0.0.0.0:5001")
         await asyncio.Future()  # Keep the server running indefinitely
 
