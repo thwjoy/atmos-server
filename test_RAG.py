@@ -1,5 +1,7 @@
 import os
 import argparse
+
+import numpy as np
 from langchain_community.document_loaders import PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings.openai import OpenAIEmbeddings
@@ -37,7 +39,11 @@ class RAGAutoComplete:
         self.embeddings = OpenAIEmbeddings(openai_api_key=self.api_key)
         self.db_chroma = None
         self.overlap = 20
+        self.texts = []
         self.load_or_create_db()
+        self.window_size = 5
+        self.window_mid = np.floor(self.window_size/2)
+        self.window_location = 40 - 3
 
     def load_txt(self):
         """Reads the txt file and returns its content as a string."""
@@ -166,14 +172,33 @@ class RAGAutoComplete:
             "chunks_scores": None
         }
 
+        # here we want to add logic to see if the match is inline with where we expect it to be
+
         if search_results:
             chunk, score = search_results[0]  # Get the most relevant chunk
-            # Find the input sentence in the chunk
             index = chunk.metadata['chunk_index']
-            for i in range(index + 1, index + n + 1):
-                ret_dict["chunks"].append(self.chunks[i].page_content)
-                ret_dict["chunks_index"].append(i)
-            ret_dict["chunks_scores"] = score
+
+            # if index is beyond window then ignore
+            if index > self.window_size + self.window_location:
+                print(f"Index is {index} for sentence {self.chunks[index]} beyond window. Ignoring.")
+                return ret_dict
+
+            if index < self.window_location + self.window_mid:
+                print(f"Index is {index} for sentence {self.chunks[index]} before window. Ignoring.")
+                return ret_dict
+
+            if index == self.window_location + self.window_mid:
+                # play next chunk
+                print("Index matches currnt position, playing next chunk.")
+                index += 1
+
+            self.window_location = int(index - self.window_mid)
+            print(f"New window_location: {self.window_location} for sentence {self.chunks[self.window_location]}")
+
+            if len(self.chunks) > index + 1:
+                ret_dict["chunks"].append(self.chunks[index + 1].page_content)
+                ret_dict["chunks_index"].append(index + 1)
+                ret_dict["chunks_scores"] = score
         else:
             print("No search results found.")
         return ret_dict
@@ -185,11 +210,13 @@ class RAGAutoComplete:
             return None
         else:
             # Retrieve 
-            chunk_len = max(0, len(chunks) - 1)
-            chunk_data = self.retrieve_next_chunks(chunks[chunk_len].page_content, 5)
-            # print(chunk_data)
-            chunk_data["audio_db"] = [self.audio_db[i] for i in chunk_data["chunks_index"]]
-            return chunk_data
+            data = []
+            for c in chunks:
+                chunk_data = self.retrieve_next_chunks(c.page_content, 5)
+                # print(chunk_data)
+                chunk_data["audio_db"] = [self.audio_db[i] for i in chunk_data["chunks_index"]]
+                data.append(chunk_data)
+            return data
 
 def main():
     # Set up argument parser
