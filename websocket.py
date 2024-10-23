@@ -34,16 +34,13 @@ async def echo(websocket, path):
                         if chunk_data["audio_db"][0]['prompt'] == "silence":
                             payload = "Silence detected"
                             print(payload)
-
-                        if len(chunk_data["audio_db"]) == 0:
+                        elif len(chunk_data["audio_db"]) == 0:
                             payload = "No audio found for the given text."
                             print(payload)
-
-                        if chunk_data["chunks_scores"] > 1.0:
+                        elif chunk_data["chunks_scores"] > 1.0:
                             payload = "Not sending audio, bad score %.3f" % chunk_data["chunks_scores"]
                             print(payload)
                             print("Audio data:", chunk_data["audio_db"][0])
-
                         else:
                             print("Sending the following data:")
                             print("Score %.3f" % chunk_data["chunks_scores"])
