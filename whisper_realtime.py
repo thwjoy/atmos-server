@@ -15,6 +15,7 @@ import string
 from scipy.io import wavfile
 # from tqdm.notebook import tqdm
 
+import webrtcvad
 import soundfile as sf
 from dtw import dtw
 from whisper.tokenizer import get_tokenizer
@@ -97,25 +98,47 @@ sampling_rate = 16000
 chunk_duration = 2
 chunk_size = sampling_rate * chunk_duration  # Number of samples per chunk
 AUDIO_TIME_PER_TOKEN = AUDIO_SAMPLES_PER_TOKEN / whisper.audio.SAMPLE_RATE
-# audio_file = "buffers/buffer_0.wav"
-# audio_full = torch.tensor(whisper.load_audio(audio_file))
 transcription = "When Mr. and Mrs. Dursley woke up on the dull, gray Tuesday our story starts."
 
 # Initialize an empty list to store audio data in real-time
 buffer_size = int(chunk_size)
 audio_buffer = np.zeros(buffer_size, dtype=np.float32)
 buffer_fill = 0 # Track the buffer fill level
+accumulated_time = 0.0  # Initialize accumulated time in seconds
+
+
+# Initialize VAD
+vad = webrtcvad.Vad()
+vad.set_mode(0)  # 0-3; higher values are more aggressive at filtering non-speech
 
 # Audio callback function to store audio in the buffer
 def audio_callback(indata, frames, time, status):
-    global audio_buffer, buffer_fill
+    global audio_buffer, buffer_fill, accumulated_time
     if status:
         print(f"Audio callback status: {status}")
 
-    # Fill the buffer with new audio data
-    frames_to_fill = min(buffer_size - buffer_fill, frames)
-    audio_buffer[buffer_fill:buffer_fill + frames_to_fill] = indata[:frames_to_fill, 0]
-    buffer_fill += frames_to_fill
+    # Convert to int16 for VAD processing
+    audio_chunk = indata[:, 0].astype(np.float32)
+    audio_chunk_int16 = (audio_chunk * 32767).astype(np.int16)  # Convert to int16 for VAD
+
+    # Define 30ms frame size
+    frame_duration = 30  # ms
+    frame_size = int(16000 * (frame_duration / 1000.0))  # Samples per 30ms frame
+
+    # Loop through the 30ms frames in the chunk
+    for i in range(0, len(audio_chunk_int16), frame_size):
+        frame = audio_chunk_int16[i:i + frame_size]
+        accumulated_time += frame_duration / 1000.0  # Update the accumulated time
+        # Check if the frame contains speech
+        if vad.is_speech(frame.tobytes(), sample_rate=16000):
+            # Only add frames with speech to the buffer
+            frames_to_fill = min(buffer_size - buffer_fill, len(frame))
+            audio_buffer[buffer_fill:buffer_fill + frames_to_fill] = frame[:frames_to_fill] / 32767.0  # Convert back to float32
+            buffer_fill += frames_to_fill
+            
+            # Stop adding if the buffer is full
+            if buffer_fill >= buffer_size:
+                break
 
 def get_audio_index_at_time(time: float):
     return int(time * whisper.audio.SAMPLE_RATE)
@@ -151,6 +174,9 @@ for start in range(0, total_samples, chunk_size):
         
         duration = len(audio_full)
         audio = audio_full[:duration]
+
+        # save the audio to a file
+        wavfile.write("buffers/buffer_vad.wav", whisper.audio.SAMPLE_RATE, audio.cpu().numpy())
 
         # simulate the rest of the audio being silence at time 5s
         duration = len(audio)
