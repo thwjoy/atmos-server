@@ -95,10 +95,10 @@ for i, block in enumerate(model.decoder.blocks):
 
 # for the first 10 examples in the dataset
 sampling_rate = 16000
-chunk_duration = 2
+chunk_duration = 1
 chunk_size = sampling_rate * chunk_duration  # Number of samples per chunk
 AUDIO_TIME_PER_TOKEN = AUDIO_SAMPLES_PER_TOKEN / whisper.audio.SAMPLE_RATE
-transcription = "When Mr. and Mrs. Dursley woke up on the dull, gray Tuesday our story starts."
+transcription = "   When Mr. and Mrs. Dursley woke up on the dull, gray Tuesday our story starts.  "
 
 # Initialize an empty list to store audio data in real-time
 buffer_size = int(chunk_size)
@@ -193,8 +193,7 @@ for start in range(0, total_samples, chunk_size):
         )
         with torch.no_grad():
             logits = model(mel.unsqueeze(0), tokens.unsqueeze(0)).squeeze(0)
-            # preds = tokenizer.decode(logits.argmax(dim=-1).tolist())
-            # print("Predicted sentence:", preds)
+            # print average entropy accross channels enropy of logits
 
         print(mel.shape, tokens.shape)
         weights = torch.cat(QKs)  # layers * heads * tokens * frames    
@@ -216,19 +215,21 @@ for start in range(0, total_samples, chunk_size):
         end_times = jump_times[word_boundaries[1:]]
 
         # we only want to display words up to the current time
-        # stop_ind = np.argmax(end_times[np.where(end_times < duration)[0]])
+        stop_ind = np.argmax(end_times[np.where(end_times < duration)[0]])
 
-        # there's an issue that it displays words which are never said...
+        # TODO find a better way of doing this
+        if jump_times.mean() > 0.5:
+            print("Skipping due to too frequent words")
+        
+            data = [
+                dict(word=word, begin=begin, end=end)
+                for word, begin, end in zip(words[:stop_ind], begin_times[:stop_ind], end_times[:stop_ind])
+                if not word.startswith("<|") and word.strip() not in ".,!?、。" 
+            ]
 
-        data = [
-            dict(word=word, begin=begin, end=end)
-            for word, begin, end in zip(words, begin_times, end_times)
-            if not word.startswith("<|") and word.strip() not in ".,!?、。" 
-        ]
+            print("Time:", duration)   
+            display(pd.DataFrame(data))
 
-        print("Time:", duration)   
-        display(pd.DataFrame(data))
-        # display(HTML("<hr>"))
         buffer_fill = 0
 
 
