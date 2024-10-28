@@ -98,7 +98,13 @@ sampling_rate = 16000
 chunk_duration = 1
 chunk_size = sampling_rate * chunk_duration  # Number of samples per chunk
 AUDIO_TIME_PER_TOKEN = AUDIO_SAMPLES_PER_TOKEN / whisper.audio.SAMPLE_RATE
-transcription = "   When Mr. and Mrs. Dursley woke up on the dull, gray Tuesday our story starts.  "
+transcription = """ When Mr. and Mrs. Dursley woke up on the dull, gray Tuesday our story starts, there was nothing about the cloudy sky outside to suggest that strange and mysterious things would soon be happening all over the country. Mr. Dursley hummed as he picked out his most boring tie for work, and Mrs. Dursley gossiped away happily as she wrestled a screaming Dudley into his high chair.
+
+None of them noticed a large, tawny owl flutter past the window.
+
+At half past eight, Mr. Dursley picked up his briefcase, pecked Mrs. Dursley on the cheek, and tried to kiss Dudley good-bye but missed, because Dudley was now having a tantrum and throwing his cereal at the walls. "Little tyke," chortled Mr. Dursley as he left the house. He got into his car and backed out of number four's drive.
+
+It was on the corner of the street that he noticed the first sign of something peculiar -- a cat reading a map. For a second, Mr. Dursley didn't realize what he had seen -- then he jerked his head around to look again. There was a tabby cat standing on the corner of Privet Drive, but there wasn't a map in sight. What could he have been thinking of? It must have been a trick of the light. Mr. Dursley blinked and stared at the cat. It stared back. As Mr. Dursley drove around the corner and up the road, he watched the cat in his mirror. It was now reading the sign that said Privet Drive -- no, looking at the sign; cats couldn't read maps or signs. Mr. Dursley gave himself a little shake and put the cat out of his mind. As he drove toward town he thought of nothing except a large order of drills he was hoping to get that day. """
 
 # Initialize an empty list to store audio data in real-time
 buffer_size = int(chunk_size)
@@ -218,17 +224,20 @@ for start in range(0, total_samples, chunk_size):
         stop_ind = np.argmax(end_times[np.where(end_times < duration)[0]])
 
         # TODO find a better way of doing this
-        if jump_times.mean() > 0.5:
-            print("Skipping due to too frequent words")
-        
-            data = [
-                dict(word=word, begin=begin, end=end)
-                for word, begin, end in zip(words[:stop_ind], begin_times[:stop_ind], end_times[:stop_ind])
-                if not word.startswith("<|") and word.strip() not in ".,!?、。" 
-            ]
+        # if jump_times.mean() > 0.5:
+        #     print("Skipping due to too frequent words")
 
-            print("Time:", duration)   
-            display(pd.DataFrame(data))
+        # compute the moving average of jump_times and remove the jumps that are too close to each other
+        avg_jump_diffs = np.diff(begin_times)
+
+        data = [
+            dict(word=word, begin=begin, end=end, diff=diff)
+            for word, begin, end, diff in zip(words[:stop_ind], begin_times[:stop_ind], end_times[:stop_ind], avg_jump_diffs[:stop_ind])
+            if not word.startswith("<|") and word.strip() not in ".,!?、。" and diff > 0.20
+        ]
+
+        print("Time:", duration)   
+        display(pd.DataFrame(data))
 
         buffer_fill = 0
 
