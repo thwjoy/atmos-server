@@ -18,7 +18,7 @@ from scipy.io import wavfile
 import webrtcvad
 import soundfile as sf
 from dtw import dtw
-from dtaidistance.dtw import warping_paths, best_path
+from dtaidistance.dtw import warping_path, warping_paths, best_path
 from whisper.tokenizer import get_tokenizer
 from scipy.ndimage import median_filter
 from IPython.display import display, HTML
@@ -227,31 +227,33 @@ for start in range(0, total_samples, chunk_size):
         audio_full = torch.cat([audio_full, new_audio])
         
         duration = len(audio_full)
-        if duration // AUDIO_SAMPLES_PER_TOKEN > 1500:
+        if duration // AUDIO_SAMPLES_PER_TOKEN > 250:
             # shift the audio buffer to the right
             duration_offset += len(new_audio)
 
-            # get words from data frame
+            # get words from data frameå
             duration_s = (duration_offset + chunk_size) / sampling_rate 
-            times = data.end.tolist()
-            # get index where times are less than duration_s
-            index = np.argmax(np.array(times) > duration_s)
+            if not data.empty:
+                times = data.end.tolist()
+                # get index where times are less than duration_s
+                index = np.argmax(np.array(times) > duration_s)
 
-            # insert data from Pandas data up to index index into data_full
-            full_data = pd.concat([full_data, data.iloc[:index]], ignore_index=True)
-            
-            curr_toks += tokenizer.encode("".join(data.iloc[:index].word.tolist()))
+                # insert data from Pandas data up to index index into data_full
+                full_data = pd.concat([full_data, data.iloc[:index]], ignore_index=True)
+                
+                curr_toks += tokenizer.encode("".join(data.iloc[:index].word.tolist()))
 
-            # Compute DTW warping paths
-            distance, paths = warping_paths(transcipt_tokens,
-                                            curr_toks, psi=0)
+                # Compute DTW warping paths
+                distance, paths = warping_paths(transcipt_tokens,
+                                                curr_toks, psi=0)
 
-            # Find the minimum distance in the last row
-            min_distances = paths[:, -1]  # Get matching for first index
-            min_index = int(np.argmin(min_distances))
-            token_offset = min_index
+                # Find the minimum distance in the last row
+                min_distances = paths[:, -1]  # Get matching for first index
+                min_index = int(np.argmin(min_distances))
+                token_offset = min_index
 
 
+        # model_start = time.time()
         audio = audio_full[duration_offset:]
 
         # simulate the rest of the audio being silence at time 5s
@@ -269,7 +271,7 @@ for start in range(0, total_samples, chunk_size):
         )
         with torch.no_grad():
             logits = model(mel.unsqueeze(0), tokens.unsqueeze(0)).squeeze(0)
-            
+
         weights = torch.cat(QKs)  # layers * heads * tokens * frames    
         weights = weights[:, :, :, : duration // AUDIO_SAMPLES_PER_TOKEN].cpu()
         weights = median_filter(weights, (1, 1, 1, medfilt_width))
@@ -277,14 +279,13 @@ for start in range(0, total_samples, chunk_size):
         w = weights / weights.norm(dim=-2, keepdim=True)
         matrix = w[-6:].mean(axis=(0, 1))
 
-        alignment = dtw(-matrix.double().numpy())
+        alignment = dtw(-matrix.double().numpy()) # TODO we can probably speed this up
 
         jumps = np.pad(np.diff(alignment.index1s), (1, 0), constant_values=1).astype(bool)
         jump_times = alignment.index2s[jumps] * AUDIO_TIME_PER_TOKEN 
         jump_times += AUDIO_TIME_PER_TOKEN / AUDIO_SAMPLES_PER_TOKEN * duration_offset
         words, word_tokens = split_tokens_on_spaces(tokens) 
 
-        # display the word-level timestamps in a table
         word_boundaries = np.pad(np.cumsum([len(t) for t in word_tokens[:-1]]), (1, 0))
         begin_times = jump_times[word_boundaries[:-1]]
         end_times = jump_times[word_boundaries[1:]]
@@ -298,9 +299,10 @@ for start in range(0, total_samples, chunk_size):
             for word, begin, end, diff in zip(words[:stop_ind], begin_times[:stop_ind], end_times[:stop_ind], avg_jump_diffs[:stop_ind])
             if not word.startswith("<|") and word.strip() not in ".,!?、。" and diff > 0.01
         ])
-
-        display("".join(full_data.word.tolist() + data.word.tolist()))
-        print(f"Current time: {data.end.tolist()[-1]}")    
+        
+        print(data) 
+        if not data.empty:
+            display("".join(full_data.word.tolist() + data.word.tolist()))  
         buffer_fill = 0
 
 
