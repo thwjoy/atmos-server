@@ -182,6 +182,7 @@ def record_audio(sampling_rate, duration, output_file):
 
 duration_offset = 0
 token_offset = 0
+token_window = 200
 
 # Function to calculate DTW distance between subsequences
 def find_best_start_index(full_list, approximate):
@@ -209,6 +210,7 @@ full_data = pd.DataFrame({
     "end": [],
     "diff": []
 })
+curr_toks = []
 
 audio_full = torch.empty(0)  # to store the entire audio so far
 for start in range(0, total_samples, chunk_size):
@@ -237,25 +239,17 @@ for start in range(0, total_samples, chunk_size):
 
             # insert data from Pandas data up to index index into data_full
             full_data = pd.concat([full_data, data.iloc[:index]], ignore_index=True)
-
-            # now we need to remove these tokens from the transcript_tokens
-            full_words = full_data.word.tolist()
             
-            curr_toks = tokenizer.encode("".join(full_words))
+            curr_toks += tokenizer.encode("".join(data.iloc[:index].word.tolist()))
 
             # Compute DTW warping paths
-            distance, paths = warping_paths(transcipt_tokens, curr_toks, psi=0)
-            alignment_path = best_path(paths)
+            distance, paths = warping_paths(transcipt_tokens,
+                                            curr_toks, psi=0)
 
             # Find the minimum distance in the last row
             min_distances = paths[:, -1]  # Get matching for first index
             min_index = int(np.argmin(min_distances))
-            min_distance = min_distances[min_index]
             token_offset = min_index
-            # print(f"Duration s: {duration_s}")
-            # print(f"Time: {times}")
-            print(f"Best Start Index: {token_offset}")
-            # print(f"Words: {full_words}")
 
 
         audio = audio_full[duration_offset:]
@@ -267,7 +261,7 @@ for start in range(0, total_samples, chunk_size):
             [
                 *tokenizer.sot_sequence,
                 tokenizer.timestamp_begin,
-            ] + transcipt_tokens[token_offset:token_offset+200] + [
+            ] + transcipt_tokens[token_offset:token_offset+token_window] + [
                 tokenizer.no_speech,
                 tokenizer.timestamp_begin + (duration - duration_offset) // AUDIO_SAMPLES_PER_TOKEN,
                 tokenizer.eot,
@@ -295,9 +289,7 @@ for start in range(0, total_samples, chunk_size):
         begin_times = jump_times[word_boundaries[:-1]]
         end_times = jump_times[word_boundaries[1:]]
 
-        # we only want to display words up to the current time
         stop_ind = np.argmax(end_times[np.where(end_times < duration)[0]])
-
 
         avg_jump_diffs = np.diff(begin_times)
 
@@ -308,8 +300,7 @@ for start in range(0, total_samples, chunk_size):
         ])
 
         display("".join(full_data.word.tolist() + data.word.tolist()))
-        # display("".join(data.word.tolist()))    
-        # display(data)
+        print(f"Current time: {data.end.tolist()[-1]}")    
         buffer_fill = 0
 
 
