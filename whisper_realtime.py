@@ -18,10 +18,14 @@ from scipy.io import wavfile
 import webrtcvad
 import soundfile as sf
 from dtw import dtw
+from dtaidistance.dtw import warping_paths, best_path
 from whisper.tokenizer import get_tokenizer
 from scipy.ndimage import median_filter
 from IPython.display import display, HTML
 import sounddevice as sd
+from fastdtw import fastdtw
+from scipy.spatial.distance import euclidean
+from scipy.interpolate import interp1d
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -136,7 +140,7 @@ def audio_callback(indata, frames, time, status):
         frame = audio_chunk_int16[i:i + frame_size]
         accumulated_time += frame_duration / 1000.0  # Update the accumulated time
         # Check if the frame contains speech
-        if vad.is_speech(frame.tobytes(), sample_rate=16000):
+        if True: #vad.is_speech(frame.tobytes(), sample_rate=16000):
             # Only add frames with speech to the buffer
             frames_to_fill = min(buffer_size - buffer_fill, len(frame))
             audio_buffer[buffer_fill:buffer_fill + frames_to_fill] = frame[:frames_to_fill] / 32767.0  # Convert back to float32
@@ -151,18 +155,60 @@ def get_audio_index_at_time(time: float):
 
 transcipt_tokens = tokenizer.encode(transcription)
 
-audio_file = "buffers/buffer.wav"
+audio_file = "buffers/buffer_full.wav"
 audio_data = wavfile.read(audio_file)[1]
 total_samples = len(audio_data)
 
 count = 0
-# Real-time recording and processing
-# with sd.InputStream(callback=audio_callback, channels=1, samplerate=sampling_rate):
-#     print("Starting real-time transcription...")
-#     audio_full = torch.empty(0)  # to store the entire audio so far
-#     # Loop until the desired duration or break condition
-#     while True:
-#         # Wait until the audio buffer is full
+
+# record an audio sample and save it as a wav file
+
+# Function to record and save audio
+def record_audio(sampling_rate, duration, output_file):
+    print("Recording started...")
+    # Record audio
+    audio_data = sd.rec(int(duration * sampling_rate), samplerate=sampling_rate, channels=1, dtype='float32')
+    sd.wait()  # Wait until the recording is finished
+    print("Recording finished.")
+    
+    # Normalize to int16 format for saving as WAV
+    audio_data_int16 = np.int16(audio_data * 32767)
+    
+    # Save as WAV file
+    wavfile.write(output_file, sampling_rate, audio_data_int16)
+    print(f"Audio saved as {output_file}")
+
+# record_audio(16000, 120, "buffers/buffer_full.wav")
+
+duration_offset = 0
+token_offset = 0
+
+# Function to calculate DTW distance between subsequences
+def find_best_start_index(full_list, approximate):
+    min_distance = float('inf')
+    best_start_index = None
+
+    for start in range(len(full_list) - len(approximate) + 1):
+        # Extract the subsequence from the full list
+        sub_list = full_list[start:start + len(approximate)]
+        
+        # Calculate DTW distance between approximate and sub_list
+        distance, _ = fastdtw(sub_list, approximate)
+        
+        # Update the minimum distance and best start index
+        if distance < min_distance:
+            min_distance = distance
+            best_start_index = start
+
+    return best_start_index, min_distance
+
+# full_data with empty data frame
+full_data = pd.DataFrame({
+    "word": [],
+    "begin": [],
+    "end": [],
+    "diff": []
+})
 
 audio_full = torch.empty(0)  # to store the entire audio so far
 for start in range(0, total_samples, chunk_size):
@@ -179,10 +225,40 @@ for start in range(0, total_samples, chunk_size):
         audio_full = torch.cat([audio_full, new_audio])
         
         duration = len(audio_full)
-        audio = audio_full[:duration]
+        if duration // AUDIO_SAMPLES_PER_TOKEN > 1500:
+            # shift the audio buffer to the right
+            duration_offset += len(new_audio)
 
-        # save the audio to a file
-        wavfile.write("buffers/buffer_vad.wav", whisper.audio.SAMPLE_RATE, audio.cpu().numpy())
+            # get words from data frame
+            duration_s = (duration_offset + chunk_size) / sampling_rate 
+            times = data.end.tolist()
+            # get index where times are less than duration_s
+            index = np.argmax(np.array(times) > duration_s)
+
+            # insert data from Pandas data up to index index into data_full
+            full_data = pd.concat([full_data, data.iloc[:index]], ignore_index=True)
+
+            # now we need to remove these tokens from the transcript_tokens
+            full_words = full_data.word.tolist()
+            
+            curr_toks = tokenizer.encode("".join(full_words))
+
+            # Compute DTW warping paths
+            distance, paths = warping_paths(transcipt_tokens, curr_toks, psi=0)
+            alignment_path = best_path(paths)
+
+            # Find the minimum distance in the last row
+            min_distances = paths[:, -1]  # Get matching for first index
+            min_index = int(np.argmin(min_distances))
+            min_distance = min_distances[min_index]
+            token_offset = min_index
+            # print(f"Duration s: {duration_s}")
+            # print(f"Time: {times}")
+            print(f"Best Start Index: {token_offset}")
+            # print(f"Words: {full_words}")
+
+
+        audio = audio_full[duration_offset:]
 
         # simulate the rest of the audio being silence at time 5s
         duration = len(audio)
@@ -191,17 +267,15 @@ for start in range(0, total_samples, chunk_size):
             [
                 *tokenizer.sot_sequence,
                 tokenizer.timestamp_begin,
-            ] + transcipt_tokens + [
+            ] + transcipt_tokens[token_offset:token_offset+200] + [
                 tokenizer.no_speech,
-                tokenizer.timestamp_begin + duration // AUDIO_SAMPLES_PER_TOKEN,
+                tokenizer.timestamp_begin + (duration - duration_offset) // AUDIO_SAMPLES_PER_TOKEN,
                 tokenizer.eot,
             ]
         )
         with torch.no_grad():
             logits = model(mel.unsqueeze(0), tokens.unsqueeze(0)).squeeze(0)
-            # print average entropy accross channels enropy of logits
-
-        print(mel.shape, tokens.shape)
+            
         weights = torch.cat(QKs)  # layers * heads * tokens * frames    
         weights = weights[:, :, :, : duration // AUDIO_SAMPLES_PER_TOKEN].cpu()
         weights = median_filter(weights, (1, 1, 1, medfilt_width))
@@ -212,7 +286,8 @@ for start in range(0, total_samples, chunk_size):
         alignment = dtw(-matrix.double().numpy())
 
         jumps = np.pad(np.diff(alignment.index1s), (1, 0), constant_values=1).astype(bool)
-        jump_times = alignment.index2s[jumps] * AUDIO_TIME_PER_TOKEN
+        jump_times = alignment.index2s[jumps] * AUDIO_TIME_PER_TOKEN 
+        jump_times += AUDIO_TIME_PER_TOKEN / AUDIO_SAMPLES_PER_TOKEN * duration_offset
         words, word_tokens = split_tokens_on_spaces(tokens) 
 
         # display the word-level timestamps in a table
@@ -223,22 +298,18 @@ for start in range(0, total_samples, chunk_size):
         # we only want to display words up to the current time
         stop_ind = np.argmax(end_times[np.where(end_times < duration)[0]])
 
-        # TODO find a better way of doing this
-        # if jump_times.mean() > 0.5:
-        #     print("Skipping due to too frequent words")
 
-        # compute the moving average of jump_times and remove the jumps that are too close to each other
         avg_jump_diffs = np.diff(begin_times)
 
-        data = [
+        data = pd.DataFrame([
             dict(word=word, begin=begin, end=end, diff=diff)
             for word, begin, end, diff in zip(words[:stop_ind], begin_times[:stop_ind], end_times[:stop_ind], avg_jump_diffs[:stop_ind])
-            if not word.startswith("<|") and word.strip() not in ".,!?、。" and diff > 0.20
-        ]
+            if not word.startswith("<|") and word.strip() not in ".,!?、。" and diff > 0.01
+        ])
 
-        print("Time:", duration)   
-        display(pd.DataFrame(data))
-
+        display("".join(full_data.word.tolist() + data.word.tolist()))
+        # display("".join(data.word.tolist()))    
+        # display(data)
         buffer_fill = 0
 
 
