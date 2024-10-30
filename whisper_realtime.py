@@ -30,9 +30,6 @@ But on the edge of town, drills were driven out of his mind by something else. A
 """
 # transcription = "Unfortunately, stunning traffic flow is difficult because driver behavior cannot be predicted with 100% certainty."
 
-audio_file = "buffers/buffer_full.wav"
-audio_data = wavfile.read(audio_file)[1]
-
 # Function to record and save audio
 def record_audio(sampling_rate, duration, output_file):
     print("Recording started...")
@@ -54,6 +51,7 @@ class RealTimeTranscriber:
         self.language = language
         whisper.model.MultiHeadAttention.use_sdpa = False
         self.log_transcript = True
+        self.n_tokens = 250 # number of tokens in audio to process at a time
         self.model = whisper.load_model(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
         # install hooks on the cross attention layers to retrieve the attention weights
         self.QKs = [None] * self.model.dims.n_text_layer
@@ -84,7 +82,7 @@ class RealTimeTranscriber:
 
         self.use_vad = False
         self.vad = webrtcvad.Vad()
-        self.vad_level = -1
+        self.vad_level = 3
         if self.vad_level > -1:
             self.vad.set_mode(self.vad_level)  # Medium aggressiveness for speech detection
         self.accumulated_time = 0.0
@@ -159,7 +157,7 @@ class RealTimeTranscriber:
                           self.sampling_rate,
                           self.audio_full)
 
-            if len(self.audio_full) // AUDIO_SAMPLES_PER_TOKEN > 250:
+            if len(self.audio_full) // AUDIO_SAMPLES_PER_TOKEN > self.n_tokens:
                 # shift the audio buffer to the right
                 self.duration_offset += len(new_audio)
 
@@ -207,7 +205,7 @@ class RealTimeTranscriber:
             logits = self.model(mel.unsqueeze(0), tokens.unsqueeze(0)).squeeze(0)
             if self.log_transcript:
                 print("Raw transcript: ", self.tokenizer.decode(logits.argmax(dim=-1)))
-            
+            # TODO we need a way to filter out when audio doesn't correspond to the book, maybe use whisper without transcript?            
 
         weights = torch.cat(self.QKs)  # layers * heads * tokens * frames    
         weights = weights[:, :, :, : duration // AUDIO_SAMPLES_PER_TOKEN].cpu()
@@ -252,14 +250,15 @@ class RealTimeTranscriber:
         return time_stamp
 
 
+# record_audio(16000, 180, "buffers/buffer_long_pause.wav")
+
 if __name__ == "__main__":
     # Load audio from a file and process in chunks
-    audio_file = "buffers/buffer_full.wav"
+    audio_file = "buffers/buffer_long_pause.wav"
     rate, audio_data = wavfile.read(audio_file)
 
-    # we need to ensure that the audio data is normalised
-    audio_data = audio_data.astype(np.float32) / 32767.0
-    
+    # # we need to ensure that the audio data is normalised
+    audio_data = audio_data.astype(np.float32) / 32767.0  
 
     transcriber = RealTimeTranscriber(transcription=transcription,
                                       sampling_rate=rate,
