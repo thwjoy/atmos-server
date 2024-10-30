@@ -28,7 +28,13 @@ It was on the corner of the street that he noticed the first sign of something p
 
 But on the edge of town, drills were driven out of his mind by something else. As he sat in the usual morning traffic jam, he couldn’t help noticing that there seemed to be a lot of strangely dressed people about. People in cloaks. Mr Dursley couldn’t bear people who dressed in funny clothes – the get-ups you saw on young people! He supposed this was some stupid new fashion. He drummed his fingers on the steering wheel and his eyes fell on a huddle of these weirdos standing quite close by. They were whispering excitedly together. Mr Dursley was enraged to see that a couple of them weren’t young at all; why, that man had to be older than he was, and wearing an emerald-green cloak! The nerve of him! But then it struck Mr Dursley that this was probably some silly stunt – these people were obviously collecting for something … yes, that would be it. The traffic moved on, and a few minutes later, Mr Dursley arrived in the Grunnings car park, his mind back on drills.
 """
-# transcription = "Unfortunately, stunning traffic flow is difficult because driver behavior cannot be predicted with 100% certainty."
+
+# load in the book
+with open("harry_potter_1_db/harry_potter_1.txt", "r") as file:
+    book = file.read()
+
+def get_transcript_from_book(book, line_start, line_end):
+    return "\n".join(book.split("\n")[line_start:line_end])
 
 # Function to record and save audio
 def record_audio(sampling_rate, duration, output_file):
@@ -47,10 +53,10 @@ def record_audio(sampling_rate, duration, output_file):
 
 
 class RealTimeTranscriber:
-    def __init__(self, transcription, language="English", model_name="base", sampling_rate=16000, chunk_duration=1):
+    def __init__(self, book, language="English", model_name="base", sampling_rate=16000, chunk_duration=1):
         self.language = language
         whisper.model.MultiHeadAttention.use_sdpa = False
-        self.log_transcript = True
+        self.log_transcript = False
         self.n_tokens = 250 # number of tokens in audio to process at a time
         self.model = whisper.load_model(model_name).to("cuda" if torch.cuda.is_available() else "cpu")
         # install hooks on the cross attention layers to retrieve the attention weights
@@ -64,8 +70,15 @@ class RealTimeTranscriber:
         for i, block in enumerate(self.model.decoder.blocks):
             block.cross_attn.register_forward_hook(lambda module, input, output, i=i: save_attention_weights(module, input, output, i))
 
+        self.book = book
+        self.line_offset = 126
+        self.line_width = 5
+        self.transcription = get_transcript_from_book(book, self.line_offset, self.line_offset + self.line_width)
         self.tokenizer = whisper.tokenizer.get_tokenizer(self.model.is_multilingual, language=language)
-        self.transcipt_tokens = self.tokenizer.encode(transcription)
+        self.transcipt_tokens = self.tokenizer.encode(self.transcription)
+        self.out_transcript = ""
+        self.book_delim = "\n"
+        self.delim_tok = self.tokenizer.encode(self.book_delim)[0]
 
         self.sampling_rate = sampling_rate
         self.chunk_size = sampling_rate * chunk_duration
@@ -77,8 +90,8 @@ class RealTimeTranscriber:
         self.token_offset = 0
         self.token_window = 200
         self.curr_toks = []
-        self.full_data = pd.DataFrame(columns=["word", "begin", "end", "diff"])
-        self.curr_data = pd.DataFrame(columns=["word", "begin", "end", "diff"])
+        self.full_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
+        self.curr_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
 
         self.use_vad = False
         self.vad = webrtcvad.Vad()
@@ -89,6 +102,27 @@ class RealTimeTranscriber:
         self.frame_duration = 30  # ms
         self.medfilt_width = 7
         self.qk_scale = 1.0
+
+    def update_transcript_toks(self):
+        # here we want to locate the line_offset, use the openAI whisper API to get a sentence
+        prev_line_n_tokens = np.where(np.array(self.transcipt_tokens) == self.delim_tok)[0][1]
+        if prev_line_n_tokens < self.token_offset + 1: # should really do this when offset is larger than the line width
+            self.line_offset += 1
+            self.transcription = get_transcript_from_book(self.book, self.line_offset, self.line_offset + self.line_width)
+            self.transcipt_tokens = self.tokenizer.encode(self.transcription)
+            # in the full_data dataframe, loop through all elements of word_tokens and see if self.delim_tok exisits in the array
+            delim_indices = self.full_data[self.full_data['word_token'].apply(lambda tokens: self.delim_tok in tokens)]
+            begin_indices = delim_indices['begin'].tolist()[0]
+            remove_audio_time = int(begin_indices * self.sampling_rate)
+            self.audio_full = self.audio_full[remove_audio_time:]
+            self.duration_offset -= remove_audio_time
+            # import pdb; pdb.set_trace()
+            # for i, row in self.full_data.iterrows():
+            #     if self.delim_tok in row.word_token:
+            
+            # self.token_offset -= prev_line_n_tokens - 1
+            
+
 
     def split_tokens_on_unicode(self, tokens: torch.Tensor):
         words = []
@@ -185,6 +219,12 @@ class RealTimeTranscriber:
             self.transcribe_chunk()
             self.buffer_fill = 0
 
+            
+            print(f"\r\n Transcript so far: {transcriber.out_transcript}")
+            # print(f"Current window: {self.token_offset} to {self.token_offset + self.token_window} text {self.tokenizer.decode(self.transcipt_tokens[self.token_offset:self.token_offset+self.token_window])}")
+            print(f"Last word timestamp: {transcriber.get_last_word_timestamp():.2f} seconds")
+            self.update_transcript_toks()
+
     def transcribe_chunk(self):
         audio = self.audio_full[self.duration_offset:]
 
@@ -219,7 +259,7 @@ class RealTimeTranscriber:
         jumps = np.pad(np.diff(alignment.index1s), (1, 0), constant_values=1).astype(bool)
         jump_times = alignment.index2s[jumps] * AUDIO_TIME_PER_TOKEN 
         jump_times += AUDIO_TIME_PER_TOKEN / AUDIO_SAMPLES_PER_TOKEN * self.duration_offset
-        words, word_tokens = self.split_tokens_on_spaces(tokens) 
+        words, word_tokens = self.split_tokens_on_spaces(tokens) # TODO convert this to token timings
 
         word_boundaries = np.pad(np.cumsum([len(t) for t in word_tokens[:-1]]), (1, 0))
         begin_times = jump_times[word_boundaries[:-1]]
@@ -230,10 +270,12 @@ class RealTimeTranscriber:
         avg_jump_diffs = np.diff(begin_times)
 
         self.curr_data = pd.DataFrame([
-            dict(word=word, begin=begin, end=end, diff=diff)
-            for word, begin, end, diff in zip(words[:stop_ind], begin_times[:stop_ind], end_times[:stop_ind], avg_jump_diffs[:stop_ind])
+            dict(word=word, word_token=word_token, begin=begin, end=end, diff=diff)
+            for word, word_token, begin, end, diff in zip(words[:stop_ind], word_tokens[:stop_ind], begin_times[:stop_ind], end_times[:stop_ind], avg_jump_diffs[:stop_ind])
             if not word.startswith("<|") and word.strip() not in ".,!?、。" and diff > 0.01
         ])
+
+        self.out_transcript = self.get_transcript()
         
     def get_transcript(self):
         words = self.full_data.word.tolist()
@@ -258,9 +300,9 @@ if __name__ == "__main__":
     rate, audio_data = wavfile.read(audio_file)
 
     # # we need to ensure that the audio data is normalised
-    audio_data = audio_data.astype(np.float32) / 32767.0  
+    audio_data = audio_data.astype(np.float32) / 32767.0
 
-    transcriber = RealTimeTranscriber(transcription=transcription,
+    transcriber = RealTimeTranscriber(book=book,
                                       sampling_rate=rate,
                                       chunk_duration=1)
     
@@ -273,8 +315,6 @@ if __name__ == "__main__":
         audio_chunk = audio_data[start:end].reshape(-1, 1)
         # this is where we send an audio_chunk
         transcriber.process_audio_chunk(audio_chunk)
-        print(f"\r\n Transcript so far: {transcriber.get_transcript()}")
-        print(f"Last word timestamp: {transcriber.get_last_word_timestamp():.2f} seconds")
 
     pd.set_option('display.max_rows', None)
     print(transcriber.full_data)
