@@ -11,6 +11,7 @@ from dtaidistance.dtw import warping_paths
 from scipy.ndimage import median_filter
 import sounddevice as sd
 import webrtcvad as vad
+from scipy.signal import resample
 
 from whisper import whisper
 
@@ -34,7 +35,7 @@ with open("harry_potter_1_db/harry_potter_1.txt", "r") as file:
     book = file.read()
 
 def get_transcript_from_book(book, line_start, line_end):
-    return "\n".join(book.split("\n")[line_start:line_end])
+    return "\n".join(book.split("\n")[line_start:line_end]) + "\n"
 
 # Function to record and save audio
 def record_audio(sampling_rate, duration, output_file):
@@ -70,62 +71,40 @@ class RealTimeTranscriber:
         for i, block in enumerate(self.model.decoder.blocks):
             block.cross_attn.register_forward_hook(lambda module, input, output, i=i: save_attention_weights(module, input, output, i))
 
+        self.sampling_rate = sampling_rate
+        self.chunk_size = sampling_rate * chunk_duration
+        self.buffer_size = self.chunk_size
+        self.audio_buffer = np.zeros(self.buffer_size, dtype=np.float32)
+        self.buffer_fill = 0
+        self.audio_complete = np.empty(0, dtype=np.int16)
+        self.duration_offset = 0
+        self.token_offset = 0
+        self.token_window = 200 # this should be at least 
+        self.audio_window = 10 # seconds
+        self.curr_toks = []
+        self.full_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
+        self.curr_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
+
         self.book = book
-        self.line_offset = 126
-        self.line_width = 7
-        self.transcription = get_transcript_from_book(book, self.line_offset, self.line_offset + self.line_width)
+        self.line_offset = 123
+        line_width = 2
+        self.transcription = get_transcript_from_book(book, self.line_offset, self.line_offset + line_width)
+        self.line_offset += line_width
         self.tokenizer = whisper.tokenizer.get_tokenizer(self.model.is_multilingual, language=language)
         self.transcipt_tokens = self.tokenizer.encode(self.transcription)
         self.out_transcript = ""
         self.book_delim = "\n"
         self.delim_tok = self.tokenizer.encode(self.book_delim)[0]
 
-        self.sampling_rate = sampling_rate
-        self.chunk_size = sampling_rate * chunk_duration
-        self.buffer_size = self.chunk_size
-        self.audio_buffer = np.zeros(self.buffer_size, dtype=np.float32)
-        self.buffer_fill = 0
-        # self.audio_full = np.empty(0, dtype=np.int16)
-        self.audio_complete = np.empty(0, dtype=np.int16)
-        self.duration_offset = 0
-        self.token_offset = 0
-        self.token_window = 400 # this should be at least 
-        self.audio_window = 30 # seconds
-        self.curr_toks = []
-        self.full_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
-        self.curr_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
-
         self.use_vad = False
         self.vad = webrtcvad.Vad()
-        self.vad_level = 1
+        self.vad_level = -1
         if self.vad_level > -1:
             self.vad.set_mode(self.vad_level)  # Medium aggressiveness for speech detection
         self.accumulated_time = 0.0
         self.frame_duration = 30  # ms
         self.medfilt_width = 7
         self.qk_scale = 1.0
-
-    # def update_transcript_toks(self):
-    #     # here we want to locate the line_offset, use the openAI whisper API to get a sentence
-    #     prev_line_n_tokens = np.where(np.array(self.transcipt_tokens) == self.delim_tok)[0][1]
-    #     if prev_line_n_tokens < self.token_offset + 1: # should really do this when offset is larger than the line width
-    #         self.line_width += 1
-    #         self.transcription = get_transcript_from_book(self.book, self.line_offset, self.line_offset + self.line_width)
-    #         self.transcipt_tokens = self.tokenizer.encode(self.transcription)
-            # self.token_offset = prev_line_n_tokens - 1
-            # in the full_data dataframe, loop through all elements of word_tokens and see if self.delim_tok exisits in the array
-            # delim_indices = self.full_data[self.full_data['word_token'].apply(lambda tokens: self.delim_tok in tokens)]
-            # begin_indices = delim_indices['begin'].tolist()[0]
-            # remove_audio_time = int(begin_indices * self.sampling_rate)
-            # self.audio_full = self.audio_full[remove_audio_time:]
-            # self.duration_offset += remove_audio_time
-    #         # import pdb; pdb.set_trace()
-    #         # for i, row in self.full_data.iterrows():
-    #         #     if self.delim_tok in row.word_token:
-            
-    #         # self.token_offset -= prev_line_n_tokens - 1
-            
-
 
     def split_tokens_on_unicode(self, tokens: torch.Tensor):
         words = []
@@ -165,14 +144,14 @@ class RealTimeTranscriber:
         audio_chunk = indata[:, 0].astype(np.float32)
         audio_chunk_int16 = (audio_chunk * 32767).astype(np.int16)  # Convert to int16 for VAD
 
-        frame_size = int(16000 * (self.frame_duration / 1000.0))  # Samples per 30ms frame
+        frame_size = int(self.sampling_rate * (self.frame_duration / 1000.0))  # Samples per 30ms frame
 
         # Loop through the 30ms frames in the chunk
         for i in range(0, len(audio_chunk_int16), frame_size):
             frame = audio_chunk_int16[i:i + frame_size]
             self.accumulated_time += self.frame_duration / 1000.0  # Update the accumulated time
             # Check if the frame contains speech
-            if (self.vad_level > -1 and self.vad.is_speech(frame.tobytes(), sample_rate=16000)) or self.vad_level == -1:
+            if (self.vad_level > -1 and self.vad.is_speech(frame.tobytes(), sample_rate=self.sampling_rate)) or self.vad_level == -1:
                 # Only add frames with speech to the buffer
                 frames_to_fill = min(self.buffer_size - self.buffer_fill, len(frame))
                 self.audio_buffer[self.buffer_fill:self.buffer_fill + frames_to_fill] = frame[:frames_to_fill] / 32767.0  # Convert back to float32
@@ -197,26 +176,33 @@ class RealTimeTranscriber:
 
             if len(self.audio_complete[self.duration_offset:]) > (self.sampling_rate * self.audio_window):
                 # append curr_data that has a timestamp less than self.duration_offset to full_data
-                copy_df = self.curr_data[self.curr_data.begin.apply(lambda begin: begin < (self.duration_offset + len(new_audio)) // self.sampling_rate)]
-                self.full_data = pd.concat([self.full_data, copy_df], ignore_index=True)
+                self.duration_offset += len(new_audio)
+                copy_df = self.curr_data[self.curr_data.begin.apply(lambda begin: begin < (self.duration_offset) // self.sampling_rate)]
+                # Filter out empty or all-NA entries in `data` before concatenation
+                if not copy_df.empty and not copy_df.isna().all().all():
+                    self.full_data = pd.concat([self.full_data, copy_df.dropna(how="all")], ignore_index=True)
                 self.curr_data = self.curr_data.drop(copy_df.index).reset_index(drop=True)
                 
                 # update duration offset and audio_full to include overlap from last word in full_data
-                self.duration_offset = int(self.curr_data.iloc[0].begin * self.sampling_rate)                
+                # import pdb; pdb.set_trace()
+                # self.duration_offset = int(self.full_data.iloc[-1].end * self.sampling_rate)                
 
                 curr_toks = [token for tokens in copy_df.word_token for token in tokens]
                 _, paths = warping_paths(self.transcipt_tokens, curr_toks, psi=0)
                 min_index = int(np.argmin(paths[:, -1]))
-                self.token_offset += min_index
+                # self.token_offset += min_index
+                self.transcipt_tokens = self.transcipt_tokens[min_index:]
 
-                # think about how we shift the transcript tokens
+            # check if we have enough tokens in the buffer
+            if len(self.transcipt_tokens) - self.token_offset < self.token_window:
+                # add more tokens to the buffer
+                new_line = get_transcript_from_book(self.book, self.line_offset, self.line_offset + 1)
+                self.line_offset += 1
+                self.transcipt_tokens += self.tokenizer.encode(new_line)
 
             self.transcribe_chunk()
+            print(f"Current trsncription: {transcriber.get_transcript()}")
             self.buffer_fill = 0
-
-            
-            print(f"\r\n Transcript so far: {transcriber.out_transcript}")
-
 
     def transcribe_chunk(self):
         # simulate the rest of the audio being silence at time 5s
@@ -266,7 +252,8 @@ class RealTimeTranscriber:
             if not word.startswith("<|") and word.strip() not in ".,!?、。" and diff > 0.01
         ])
 
-        assert self.curr_data.empty, "No words found in curr_data"
+        if self.curr_data.empty:
+            import pdb; pdb.set_trace()
 
         self.out_transcript = self.get_transcript()
         
@@ -284,19 +271,40 @@ class RealTimeTranscriber:
             time_stamp += self.full_data.iloc[-1].end
         return time_stamp
 
+    def print_and_save_df(self, file_name):
+        pd.set_option('display.max_rows', None)
+        df = pd.concat([transcriber.full_data, transcriber.curr_data], ignore_index=True)
+        df.to_csv(file_name)
+        print(df)
+
 
 # record_audio(16000, 180, "buffers/buffer_long_pause.wav")
 
 if __name__ == "__main__":
     # Load audio from a file and process in chunks
-    audio_file = "buffers/buffer_full.wav"
-    rate, audio_data = wavfile.read(audio_file)
+    audio_file = "output_audio.wav"
+    original_sample_rate, audio_data = wavfile.read(audio_file)
+
+    # Define the target sample rate
+    target_sample_rate = 16000
+
+    if original_sample_rate != target_sample_rate:
+        # Calculate the number of samples after resampling
+        num_samples = int(len(audio_data) * target_sample_rate / original_sample_rate)
+
+        # Resample the audio data
+        audio_data = resample(audio_data, num_samples)
+
+        # Save the resampled audio with the new sample rate
+        wavfile.write("resampled_audio.wav", target_sample_rate, audio_data.astype(np.int16))
+        original_sample_rate, audio_data = wavfile.read("resampled_audio.wav")
 
     # # we need to ensure that the audio data is normalised
     audio_data = audio_data.astype(np.float32) / 32767.0
 
+    # import pdb; pdb.set_trace()
     transcriber = RealTimeTranscriber(book=book,
-                                      sampling_rate=rate,
+                                      sampling_rate=original_sample_rate,
                                       chunk_duration=1)
     
 
@@ -309,7 +317,6 @@ if __name__ == "__main__":
         # this is where we send an audio_chunk
         transcriber.process_audio_chunk(audio_chunk)
 
-    pd.set_option('display.max_rows', None)
-    print(transcriber.full_data)
+    transcriber.print_and_save_df(audio_file.replace(".wav", ".csv"))
     print(transcriber.get_transcript())
 
