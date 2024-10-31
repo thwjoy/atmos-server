@@ -1,5 +1,8 @@
+import ast
 import os
 import argparse
+import re
+import pandas as pd
 
 import numpy as np
 from langchain_community.document_loaders import PyPDFLoader
@@ -43,7 +46,7 @@ class RAGAutoComplete:
         self.load_or_create_db()
         self.window_size = 5
         self.window_mid = np.floor(self.window_size/2)
-        self.window_location = 40 - 3
+        self.window_location = 39 - 3
 
     def load_txt(self):
         """Reads the txt file and returns its content as a string."""
@@ -73,43 +76,73 @@ class RAGAutoComplete:
         completion = client.chat.completions.create(
         model="gpt-4o",
         messages=[
-            {"role": "system", "content": """You are a helpful assistant. I want you \
-             to help me generate an audio prompt based on the following text.\
-             The prompt should be very short and should only contain the names of sounds.\
-             It should only contain one sound maximum. \
-             If there is no sound use silence, but this should be rarely used.\
-             Examples include, knocking on a door, a cat meowing, cars/motorbikes etc.
-             I  want you to also estimate the duration of the audio prompt. \
-             It should be as short as possible, use the a json format as an output.\
-             ```json
-             {
-                "prompt": ,
-                "audio_duration": 1.0
-             }
-             ```
+            {"role": "system", "content": """You are a helpful assistant. We're trying to \
+             imagine the sounds that would be heard in Harry Potter. For each word in the \
+             following sentence, I want you to provide a short audio description. \
+             The description should be whimsical and funny.\
+             It should only contain one sound maximum per word and be short and funny. \
+             Only add sounds for things that make sounds, e.g. only add SFX.\
+             Examples include, knocking on a door, a cat meowing, cars/motorbikes etc. \
+             I want you to output the response as an arry like so. Do not include any other \
+             content apart from the array as I append it to another array.\
+             
+             [
+                ["He", "silence"],
+                ["didn't", "silence"],
+                ["see", "silence"],
+                ["the", "silence"],
+                ["owls", "hoot hoot - an owl hooting playfully"],
+                ["swooping", "whoosh! - an owl swooping quickly by"],
+                ["past", "whoosh! - another owl swooshing past"],
+                ["in", "silence"],
+                ["broad", "silence"],
+                ["daylight", "chirp chirp - soft birds chirping in the morning"],
+                ["though", "silence"],
+                ["people", "chatter chatter - distant chatter of people watching"],
+                ["down", "silence"],
+                ["in", "silence"],
+                ["the", "silence"],
+                ["street", "honk honk - a car horn beeping lightly"],
+                ["did", "silence"],
+                ["they", "silence"],
+                ["pointed", "boing! - a funny ‘boing!’ as they point"],
+                ["and", "silence"],
+                ["gazed", "silence"],
+                ["open-mouthed", "ooooh! - an exaggerated ‘ooooh!’ sound as they stare"],
+                ["as", "silence"],
+                ["owl", "hoot hoot - an owl hooting happily"],
+                ["after", "silence"],
+                ["owl", "hoot hoot - another owl hooting"],
+                ["sped", "zoom! - a ‘zoom!’ sound as an owl speeds by"],
+                ["overhead", "whoosh! - a final ‘whoosh!’ as an owl flies overhead"]
+             ]
+             
+             would be an example for the input: "He didn’t see the owls swooping past in broad daylight, though people down in the street did; they pointed and gazed open-mouthed as owl after owl sped overhead." \
+
              """},
-            {"role": "user", "content": text}
+            {"role": "user", "content": f"I want you to process this sentence: {text}"}
         ]
         )
 
-
-        ret = {
-                "prompt": "silence",
-                "audio_duration": 1.0
-             }
-        try:
-            json_string = completion.choices[0].message.content.strip("`json")
-            ret = json.loads(json_string)
-        except:
-            print("Error in getting audio prompt from chatGPT")
-        return ret
+        ret = [[]]
+        pattern = r'\[\s*(\[[^\]]*\]\s*,?\s*)+\]'  # Non-greedy to match array structure
+        array_match = re.search(pattern, completion.choices[0].message.content, re.DOTALL)  # Matches across multiple lines
+        if array_match:
+            array_string = array_match.group()
+            try:
+                literal = ast.literal_eval(array_string)
+                if isinstance(literal, list) and all(isinstance(i, list) for i in literal):
+                    ret = literal 
+                return ret 
+            except (SyntaxError, ValueError):
+                return ret
 
 
 
     def add_audio_data(self):
         """Add audio data to the database."""
         # Add audio data to the database
-        generator = AudioGenerator()
+        # generator = AudioGenerator()
 
         self.audio_db = []
 
@@ -131,11 +164,12 @@ class RAGAutoComplete:
             
             print("Finished collecting prompts.")
 
+            import pdb; pdb.set_trace()
             # get the audo
             filepaths = [os.path.join(sound_dir, f"audio_{i + j}.wav") for j in range(len(kwargs))]
-            generator.generate_audio(output_file=filepaths,
-                                     prompt=[k["prompt"] for k in kwargs],
-                                     audio_duration=3.0) # hard code for now
+            # generator.generate_audio(output_file=filepaths,
+            #                          prompt=[k["prompt"] for k in kwargs],
+            #                          audio_duration=3.0) # hard code for now
             
             for j in range(len(kwargs)):
                 self.audio_db.append({
@@ -147,19 +181,45 @@ class RAGAutoComplete:
 
             save_as_csv(self.audio_db, os.path.join(self.chroma_path, f"{self.chroma_path}.csv"))
 
+    def get_descriptions(self):
+        book = self.load_txt()
+
+        # just get the first chapter from book, indicated by - CHAPTER ONE - and — CHAPTER TWO —
+        book = book.split("CHAPTER ONE")[1]
+        book = book.split("CHAPTER TWO")[0]
+
+        # split book into sentences
+        sentences = book.split(".")
+
+        # get description for each sentence. 
+        descriptions = []
+        for i, s in enumerate(sentences):
+            if s != "":
+                descript = self.get_audio_prompt_from_chatGPT(s)
+                descriptions.extend(descript)
+
+        df = pd.DataFrame(descriptions, columns=["Word", "Sound Description"])
+        df.to_csv(os.path.join(self.chroma_path, f"{self.chroma_path}_descriptions.csv"), index=False)
+
+    # def add_sounds(self):
+        
+
+
+
     def load_or_create_db(self):
         """Checks if the database exists and loads it, otherwise creates it."""
-        self.index_txt()
-        if os.path.exists(self.chroma_path):
-            print(f"Loading existing database for {self.chroma_path}...")
-            self.db_chroma = Chroma(persist_directory=self.chroma_path, embedding_function=self.embeddings)
-            self.audio_db = read_csv_as_dicts(os.path.join(self.chroma_path, f"{self.chroma_path}.csv"))
-        else:
-            print(f"Database for {self.chroma_path} not found. Creating a new one...")
-            from saudio import AudioGenerator
-            self.db_chroma = Chroma.from_documents(self.chunks, self.embeddings, persist_directory=self.chroma_path)
-            self.db_chroma.persist()
-            self.add_audio_data()
+        self.get_descriptions()
+        # self.index_txt()
+        # if os.path.exists(self.chroma_path):
+        #     print(f"Loading existing database for {self.chroma_path}...")
+        #     self.db_chroma = Chroma(persist_directory=self.chroma_path, embedding_function=self.embeddings)
+        #     self.audio_db = read_csv_as_dicts(os.path.join(self.chroma_path, f"{self.chroma_path}.csv"))
+        # else:
+        #     print(f"Database for {self.chroma_path} not found. Creating a new one...")
+        #     # from saudio import AudioGenerator
+        #     self.db_chroma = Chroma.from_documents(self.chunks, self.embeddings, persist_directory=self.chroma_path)
+        #     self.db_chroma.persist()
+        #     self.add_audio_data()
 
     def retrieve_next_chunks(self, input_sentence, n=5):
         """Find the input sentence and return the next two sentences."""
@@ -195,9 +255,9 @@ class RAGAutoComplete:
             self.window_location = int(index - self.window_mid)
             print(f"New window_location: {self.window_location} for sentence {self.chunks[self.window_location]}")
 
-            if len(self.chunks) > index + 1:
-                ret_dict["chunks"].append(self.chunks[index + 1].page_content)
-                ret_dict["chunks_index"].append(index + 1)
+            if len(self.chunks) > index:
+                ret_dict["chunks"].append(self.chunks[index].page_content)
+                ret_dict["chunks_index"].append(index)
                 ret_dict["chunks_scores"] = score
         else:
             print("No search results found.")
@@ -218,12 +278,7 @@ class RAGAutoComplete:
                 data.append(chunk_data)
             return data
 
-def main():
-    # Set up argument parser
-    parser = argparse.ArgumentParser(description='RAG System for Autocompleting Sentences.')
-    parser.add_argument('--doc_path', type=str, help='Path to the text document')
-    args = parser.parse_args()
-
+def main(args):
     # Extract book name from file path and use it as the Chroma DB name
     book_name = os.path.splitext(os.path.basename(args.doc_path))[0]
     chroma_path = f"{book_name}_db"
@@ -232,9 +287,20 @@ def main():
     rag_system = RAGAutoComplete(doc_path=args.doc_path, chroma_path=chroma_path, api_key=OPENAI_API_KEY)
     
     # # # # Load or create the database
-    
-    input_sentence = "The Boy Who Lived. Mr. and Mrs. Dursley of No. 4 Privet Drive were proud to say that they were perfectly normal, thank you very much. They were the last people you'd expect to be involved in anything strange or mysterious, because they just didn't hold such nonsense. Mr. Dursley was the director of a film called Grunnings, which made drills. He was a big, beefy man with hardly any neck, although he did have a very large moustache. Mrs. Dursley was thin and blonde, and had nearly twice the usual amount of neck, which came in very useful as she spent so much of her time craning over garden fences, spying on the neighbours. The Dursleys had a small son called Dudley, and in their opinion, there was no finer boy anywhere. The Dursleys had everything they wanted, but they also had a secret, and their greatest fear was that somebody would discover it. They didn't think they could bear it if anyone found out about the Potters. Mrs. Potter was Mrs. Dursley's sister, but they hadn't met for several years. In fact, Mrs. Dursley pretended she didn't have a sister at all, because her sister and her good-for-nothing husband were so undursleyish as it was possible to be. The Dursleys shuddered to think what their neighbours would say if the Potters arrived in the street. The Dursleys knew that the Potters had a small son too, but they never ever had seen him. This boy was another good reason for keeping the Potters away. They didn't want Dudley mixing with a child like that. When Mr. Dursley woke up on the dull, grey Tuesday our story starts, there was nothing about the cloudy sky outside to suggest that strange and mysterious things would soon be happening."
-    print(rag_system.get_audio(input_sentence))
+    if False:
+        input_sentence = "When Mr. Dursley woke up on the dull, grey Tuesday our story starts, there was nothing about the cloudy sky outside to suggest that strange and mysterious things would soon be happening."
+        print(rag_system.get_audio(input_sentence))
+
 
 if __name__ == "__main__":
-    main()
+    # Set up argument parser
+    parser = argparse.ArgumentParser(description='RAG System for Autocompleting Sentences.')
+    parser.add_argument('--doc_path', type=str, help='Path to the text document')
+    parser.add_argument('--process_doc',  action='store_true', help='Process the document and create the Chroma DB', default=False)
+    args = parser.parse_args()
+    if args.process_doc:
+        book_name = os.path.splitext(os.path.basename(args.doc_path))[0]
+        chroma_path = chroma_path = f"{book_name}_db_v2"
+        rag_system = RAGAutoComplete(doc_path=args.doc_path, chroma_path=chroma_path, api_key=OPENAI_API_KEY)
+    else:
+        main(args)
