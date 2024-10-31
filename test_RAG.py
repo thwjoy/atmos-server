@@ -200,15 +200,78 @@ class RAGAutoComplete:
 
         df = pd.DataFrame(descriptions, columns=["Word", "Sound Description"])
         df.to_csv(os.path.join(self.chroma_path, f"{self.chroma_path}_descriptions.csv"), index=False)
+        return df
 
-    # def add_sounds(self):
+    def add_audio_to_descriptions(self, df):
+        import torch
+        import soundfile as sf
+        from diffusers import StableAudioPipeline
+
+        pipe = StableAudioPipeline.from_pretrained("stabilityai/stable-audio-open-1.0", torch_dtype=torch.float16)
+        pipe = pipe.to("cuda")
+        # set the seed for generator
+        generator = torch.Generator("cuda").manual_seed(0)
+
+        # make sounds folder
+        sound_dir = os.path.join(self.chroma_path, "sounds")
+        os.makedirs(sound_dir, exist_ok=True)
+
+        batch_size = 2
+        batch = []
+        batch_paths = []
+        negative_prompt = ["Low quality."]
+        num_waveforms_per_prompt=2
+        for i, row in tqdm(df.iterrows()):
+            filepaths = os.path.join(sound_dir, f"audio_{i+2}.wav")
+            # accumulate descriptions which are not silence
+            if row["Sound Description"] != "silence":
+                batch.append(row["Sound Description"])
+                batch_paths.append(filepaths)
+                df.loc[i, "audio"] = filepaths
+
+            if len(batch) == batch_size:
+                # run the generation
+                audio = pipe(
+                    batch,
+                    negative_prompt=negative_prompt * len(batch),
+                    num_inference_steps=200,
+                    audio_end_in_s=3.0,
+                    num_waveforms_per_prompt=num_waveforms_per_prompt,
+                    generator=generator
+                ).audios
+
+                counter = 0
+                for f in batch_paths:
+                    for i in range(num_waveforms_per_prompt):
+                        output = audio[counter].T.float().cpu().numpy()
+                        if i > 0:
+                            name, ext = os.path.splitext(f)
+                            f = f"{name}_{i}{ext}"
+                        sf.write(f, output, pipe.vae.sampling_rate)
+                        counter += 1
+
+                batch = []
+                batch_paths = []
+
+                # save the csv
+                df.to_csv(os.path.join(self.chroma_path, f"{self.chroma_path}_audios.csv"), index=False)
+
+
+            
+
+
         
-
-
-
     def load_or_create_db(self):
         """Checks if the database exists and loads it, otherwise creates it."""
-        self.get_descriptions()
+        # if descruption csv doesn't exist, create it
+        if not os.path.exists(os.path.join(self.chroma_path, f"{self.chroma_path}_descriptions.csv")):
+            self.get_descriptions()
+            # add the sounds
+
+        df = pd.read_csv(os.path.join(self.chroma_path, f"{self.chroma_path}_descriptions.csv"))
+        self.add_audio_to_descriptions(df)
+
+        
         # self.index_txt()
         # if os.path.exists(self.chroma_path):
         #     print(f"Loading existing database for {self.chroma_path}...")
