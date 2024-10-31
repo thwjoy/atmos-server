@@ -19,17 +19,6 @@ from whisper import whisper
 AUDIO_SAMPLES_PER_TOKEN = whisper.audio.HOP_LENGTH * 2
 AUDIO_TIME_PER_TOKEN = AUDIO_SAMPLES_PER_TOKEN / whisper.audio.SAMPLE_RATE
 
-transcription = """ When Mr. and Mrs. Dursley woke up on the dull, gray Tuesday our story starts, there was nothing about the cloudy sky outside to suggest that strange and mysterious things would soon be happening all over the country. Mr. Dursley hummed as he picked out his most boring tie for work, and Mrs. Dursley gossiped away happily as she wrestled a screaming Dudley into his high chair.
-
-None of them noticed a large, tawny owl flutter past the window.
-
-At half past eight, Mr. Dursley picked up his briefcase, pecked Mrs. Dursley on the cheek, and tried to kiss Dudley good-bye but missed, because Dudley was now having a tantrum and throwing his cereal at the walls. "Little tyke," chortled Mr. Dursley as he left the house. He got into his car and backed out of number four's drive.
-
-It was on the corner of the street that he noticed the first sign of something peculiar -- a cat reading a map. For a second, Mr. Dursley didn't realize what he had seen -- then he jerked his head around to look again. There was a tabby cat standing on the corner of Privet Drive, but there wasn't a map in sight. What could he have been thinking of? It must have been a trick of the light. Mr. Dursley blinked and stared at the cat. It stared back. As Mr. Dursley drove around the corner and up the road, he watched the cat in his mirror. It was now reading the sign that said Privet Drive -- no, looking at the sign; cats couldn't read maps or signs. Mr. Dursley gave himself a little shake and put the cat out of his mind. As he drove toward town he thought of nothing except a large order of drills he was hoping to get that day. 
-
-But on the edge of town, drills were driven out of his mind by something else. As he sat in the usual morning traffic jam, he couldn’t help noticing that there seemed to be a lot of strangely dressed people about. People in cloaks. Mr Dursley couldn’t bear people who dressed in funny clothes – the get-ups you saw on young people! He supposed this was some stupid new fashion. He drummed his fingers on the steering wheel and his eyes fell on a huddle of these weirdos standing quite close by. They were whispering excitedly together. Mr Dursley was enraged to see that a couple of them weren’t young at all; why, that man had to be older than he was, and wearing an emerald-green cloak! The nerve of him! But then it struck Mr Dursley that this was probably some silly stunt – these people were obviously collecting for something … yes, that would be it. The traffic moved on, and a few minutes later, Mr Dursley arrived in the Grunnings car park, his mind back on drills.
-"""
-
 # load in the book
 with open("harry_potter_1_db/harry_potter_1.txt", "r") as file:
     book = file.read()
@@ -54,7 +43,17 @@ def record_audio(sampling_rate, duration, output_file):
 
 
 class RealTimeTranscriber:
-    def __init__(self, book, language="English", model_name="base", sampling_rate=16000, chunk_duration=1):
+    def __init__(self,
+                 book,
+                 line_offset,
+                 chunk_duration=1,
+                 language="English",
+                 model_name="base",
+                 token_window=200,
+                 audio_window=10,
+                 vad_level=-1,
+                 book_delim="\n"):
+        
         self.language = language
         whisper.model.MultiHeadAttention.use_sdpa = False
         self.log_transcript = False
@@ -71,34 +70,34 @@ class RealTimeTranscriber:
         for i, block in enumerate(self.model.decoder.blocks):
             block.cross_attn.register_forward_hook(lambda module, input, output, i=i: save_attention_weights(module, input, output, i))
 
-        self.sampling_rate = sampling_rate
-        self.chunk_size = sampling_rate * chunk_duration
+        self.sampling_rate = 16000 # TODO fix why this has to be hardcoded
+        self.chunk_size = self.sampling_rate * chunk_duration
         self.buffer_size = self.chunk_size
         self.audio_buffer = np.zeros(self.buffer_size, dtype=np.float32)
         self.buffer_fill = 0
         self.audio_complete = np.empty(0, dtype=np.int16)
         self.duration_offset = 0
         self.token_offset = 0
-        self.token_window = 200 # this should be at least 
-        self.audio_window = 10 # seconds
+        self.token_window = token_window # this should be at least 
+        self.audio_window = audio_window # seconds
         self.curr_toks = []
         self.full_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
         self.curr_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
 
         self.book = book
-        self.line_offset = 123
+        self.line_offset = line_offset
         line_width = 2
         self.transcription = get_transcript_from_book(book, self.line_offset, self.line_offset + line_width)
         self.line_offset += line_width
         self.tokenizer = whisper.tokenizer.get_tokenizer(self.model.is_multilingual, language=language)
         self.transcipt_tokens = self.tokenizer.encode(self.transcription)
         self.out_transcript = ""
-        self.book_delim = "\n"
+        self.book_delim = book_delim
         self.delim_tok = self.tokenizer.encode(self.book_delim)[0]
 
         self.use_vad = False
         self.vad = webrtcvad.Vad()
-        self.vad_level = -1
+        self.vad_level = vad_level
         if self.vad_level > -1:
             self.vad.set_mode(self.vad_level)  # Medium aggressiveness for speech detection
         self.accumulated_time = 0.0
@@ -282,20 +281,15 @@ class RealTimeTranscriber:
 
 if __name__ == "__main__":
     # Load audio from a file and process in chunks
-    audio_file = "output_audio.wav"
+    audio_file = "output_audio_tts.wav"
     original_sample_rate, audio_data = wavfile.read(audio_file)
 
     # Define the target sample rate
     target_sample_rate = 16000
 
     if original_sample_rate != target_sample_rate:
-        # Calculate the number of samples after resampling
         num_samples = int(len(audio_data) * target_sample_rate / original_sample_rate)
-
-        # Resample the audio data
         audio_data = resample(audio_data, num_samples)
-
-        # Save the resampled audio with the new sample rate
         wavfile.write("resampled_audio.wav", target_sample_rate, audio_data.astype(np.int16))
         original_sample_rate, audio_data = wavfile.read("resampled_audio.wav")
 
@@ -304,10 +298,8 @@ if __name__ == "__main__":
 
     # import pdb; pdb.set_trace()
     transcriber = RealTimeTranscriber(book=book,
-                                      sampling_rate=original_sample_rate,
-                                      chunk_duration=1)
+                                      line_offset=126)
     
-
     # Process the audio in chunks
     num_chunks = len(audio_data) // transcriber.chunk_size
     for i in range(num_chunks):
