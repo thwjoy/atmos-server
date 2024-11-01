@@ -137,10 +137,8 @@ class RAGAutoComplete:
             except (SyntaxError, ValueError):
                 return ret
 
-
-
     def add_audio_data(self):
-        """Add audio data to the database."""
+        """DEPRECATED Add audio data to the database."""
         # Add audio data to the database
         # generator = AudioGenerator()
 
@@ -222,6 +220,9 @@ class RAGAutoComplete:
         negative_prompt = ["Low quality."]
         num_waveforms_per_prompt=2
         for i, row in tqdm(df.iterrows()):
+            if row["Sound Description"] != row["Sound Description"]:
+                continue
+            
             filepaths = os.path.join(sound_dir, f"audio_{i+2}.wav")
             # accumulate descriptions which are not silence
             if row["Sound Description"] != "silence":
@@ -255,12 +256,7 @@ class RAGAutoComplete:
 
                 # save the csv
                 df.to_csv(os.path.join(self.chroma_path, f"{self.chroma_path}_audios.csv"), index=False)
-
-
-            
-
-
-        
+             
     def load_or_create_db(self):
         """Checks if the database exists and loads it, otherwise creates it."""
         # if descruption csv doesn't exist, create it
