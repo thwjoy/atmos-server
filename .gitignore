@@ -164,3 +164,4 @@ cython_debug/
 *_db*
 EC2_stuff
 buffers
+*.wav
