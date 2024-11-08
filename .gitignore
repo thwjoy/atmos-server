@@ -161,7 +161,9 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-*_db*
+harry_potter_1_db*
 EC2_stuff
 buffers
 *.wav
+
+ESC*
