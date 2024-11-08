@@ -3,9 +3,10 @@ import assemblyai as aai
 import pydub
 import soundfile as sf
 import sounddevice as sd
-import pyaudio
 import os
-
+import asyncio
+import websockets
+import json
 from assembly_db import SoundAssigner, OPENAI_API_KEY
 
 aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094" 
@@ -25,123 +26,80 @@ all_sounds = [
     "crow", "thunderstorm", "drinking_sipping", "glass_breaking", "hand_saw"
 ]
 
-class MicrophoneStream:
-    def __init__(self, sample_rate: int = 44_100, device_index: Optional[int] = None):
-        """
-        Creates a stream of audio from the microphone.
-
-        Args:
-            sample_rate: The sample rate to record audio at.
-            device_index: The index of the input device to use. If None, uses the default device.
-        """
-        self._pyaudio = pyaudio.PyAudio()
-        self.sample_rate = sample_rate
-
-        self._chunk_size = int(self.sample_rate * 0.1)
-        self._stream = self._pyaudio.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=sample_rate,
-            input=True,
-            frames_per_buffer=self._chunk_size,
-            input_device_index=device_index,
-        )
-
-        self._open = True
-
-    def __iter__(self):
-        """
-        Returns the iterator object.
-        """
-
-        return self
-
-    def __next__(self):
-        """
-        Reads a chunk of audio from the microphone.
-        """
-        if not self._open:
-            raise StopIteration
-
-        try:
-            return self._stream.read(self._chunk_size)
-        except KeyboardInterrupt:
-            raise StopIteration
-
-    def close(self):
-        """
-        Closes the stream.
-        """
-
-        self._open = False
-
-        if self._stream.is_active():
-            self._stream.stop_stream()
-
-        self._stream.close()
-        self._pyaudio.terminate()
-
-
-
-def play_audio(audio_path):
-    "This function plays the audio file at the given path."
-
-    
+# Function to convert audio to WAV and read binary data
+def get_audio_bytes(audio_path):
     pydub.AudioSegment.from_file(audio_path).export("temp.wav", format="wav")
-    
+    with open("temp.wav", "rb") as audio_file:
+        return audio_file.read()
 
-    data, samplerate = sf.read("temp.wav")
-    sd.play(data, samplerate)
-
-def on_open(session_opened: aai.RealtimeSessionOpened):
-    "This function is called when the connection has been established."
-
-    print("Session ID:", session_opened.session_id)
-
-def on_data(transcript: aai.RealtimeTranscript):
-    "This function is called when a new transcript has been received."
-
+async def process_transcript_async(transcript, websocket):
+    """Async function to process and send the audio file if a match is found."""
     if not transcript.text:
         return
-
     if isinstance(transcript, aai.RealtimeFinalTranscript):
         print(transcript.text, end="\r\n")
         filename, category = assigner.retrieve_src_file(transcript.text)
         if filename is not None:
-            print(f"Playing sound for category '{category}'")
-            play_audio(os.path.join("ESC-50-master/audio", filename))
+            print(f"Sending sound for category '{category}' to client.")
+            audio_bytes = get_audio_bytes(os.path.join("ESC-50-master/audio", filename))
+            try:
+                await websocket.send(category)  # Debug confirmation message
+                await websocket.send(audio_bytes)  # Send the actual audio bytes
+                print("[DEBUG] Audio data sent to client.")
+            except Exception as e:
+                print(f"[ERROR] Failed to send audio data: {e}")
         else:
             print("No sound found for the given text.")
 
+def on_data(transcript, websocket, loop):
+    """Callback function that schedules async transcript processing in the main event loop."""
+    asyncio.run_coroutine_threadsafe(process_transcript_async(transcript, websocket), loop)
 
 def on_error(error: aai.RealtimeError):
-    "This function is called when the connection has been closed."
-
-    print("An error occured:", error)
+    print("An error occurred:", error)
 
 def on_close():
-    "This function is called when the connection has been closed."
-
     print("Closing Session")
 
+# WebSocket server to receive audio from a client
+async def audio_receiver(websocket, path):
+    print("Client connected")
+    
+    # Get the main event loop
+    loop = asyncio.get_running_loop()
 
-transcriber = aai.RealtimeTranscriber(
-    on_data=on_data,
-    on_error=on_error,
-    sample_rate=44_100,
-    on_open=on_open, # optional
-    on_close=on_close, # optional
-    word_boost=all_sounds,
-    end_utterance_silence_threshold=500
-)
+    # Initialize the transcriber with an on_data handler that uses the main loop
+    transcriber = aai.RealtimeTranscriber(
+        on_data=lambda transcript: on_data(transcript, websocket, loop),
+        on_error=on_error,
+        sample_rate=44_100,
+        on_open=lambda session: print("Session ID:", session.session_id),
+        on_close=on_close,
+        word_boost=all_sounds,
+        end_utterance_silence_threshold=500
+    )
 
-# Start the connection
-transcriber.connect()
+    try:
+        # Connect the transcriber
+        transcriber.connect()
 
-# Open a microphone stream
-microphone_stream = MicrophoneStream()
+        # Stream audio data from the WebSocket client to AssemblyAI
+        async for message in websocket:
+            # Assume audio data is received as binary data
+            transcriber.stream([message])  # Streaming to AssemblyAI
+     
+    except websockets.ConnectionClosed as e:
+        print(f"Client disconnected: {e}")
+    finally:
+        transcriber.close()
 
-# Press CTRL+C to abort
-transcriber.stream(microphone_stream)
 
-transcriber.close()
+# Start WebSocket server
+async def start_server():
+    server = await websockets.serve(audio_receiver, "0.0.0.0", 8765)
+    print("WebSocket server started on ws://0.0.0.0:8765")
+    await server.wait_closed()
+
+# Run the server
+if __name__ == "__main__":
+    asyncio.run(start_server())
