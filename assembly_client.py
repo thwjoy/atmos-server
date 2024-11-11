@@ -3,6 +3,10 @@ import websockets
 import pyaudio
 import wave
 import io
+from concurrent.futures import ThreadPoolExecutor
+
+# ThreadPoolExecutor for running play_audio in a separate thread
+# executor = ThreadPoolExecutor(max_workers=1)
 
 # WebSocket server URL
 SERVER_URI = "ws://localhost:8765"  # Replace <server_ip> with your server's IP
@@ -13,7 +17,7 @@ CHUNK_SIZE = 1024  # Number of frames per buffer
 FORMAT = pyaudio.paInt16  # 16-bit audio format
 CHANNELS = 1
 
-async def play_audio(audio_bytes):
+def play_audio_sync(audio_bytes):
     """Plays the received audio data."""
     audio = pyaudio.PyAudio()
     stream = audio.open(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, output=True)
@@ -29,6 +33,10 @@ async def play_audio(audio_bytes):
     stream.stop_stream()
     stream.close()
     audio.terminate()
+
+async def play_audio(audio_bytes):
+    """Runs play_audio_sync in a background thread."""
+    await asyncio.to_thread(play_audio_sync, audio_bytes)
 
 async def send_audio(websocket):
     p = pyaudio.PyAudio()
@@ -61,6 +69,7 @@ async def receive_audio(websocket):
         else:
             # Play the received audio data
             await play_audio(message)
+
 
 async def main():
     async with websockets.connect(SERVER_URI) as websocket:
