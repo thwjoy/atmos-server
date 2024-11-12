@@ -13,7 +13,7 @@ class AudioServer:
     def __init__(self, host="0.0.0.0", port=8765):
         self.host = host
         self.port = port
-        self.music_sent = False  # Track whether a MUSIC track has been sent
+        self.music_sent_event = asyncio.Event()  # Track whether a MUSIC track has been sent
         aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094"
         self.assigner_SFX = SoundAssigner(chroma_path="ESC-50_db")
         self.assigner_Music = SoundAssigner(chroma_path="SA_db")
@@ -50,31 +50,30 @@ class AudioServer:
         if not transcript.text:
             return
         if isinstance(transcript, aai.RealtimeFinalTranscript):
-            filename, category = self.assigner_SFX.retrieve_src_file(transcript.text)
-            audio_bytes = None
-            indicator = None
-
-            if filename:  # If SFX file found
-                print(f"Sending SFX for category '{category}' to client.")
-                audio_bytes = self.get_audio_bytes(os.path.join(filename))
-                indicator = "SFX"
-            else:  # Default to sending Music if no SFX file found
-                filename, category = self.assigner_Music.retrieve_src_file(transcript.text)
-                if filename:
-                    print(f"Sending MUSIC for category '{category}' to client.")
-                    audio_bytes = self.get_audio_bytes(os.path.join(filename))
-                    indicator = "MUSIC"
-
-            if audio_bytes:
-                header = f"{indicator}:{len(audio_bytes)}".encode('utf-8')
-                message = header + audio_bytes  # Combine header with actual audio bytes
-                try:
-                    await self.send_audio_in_chunks(websocket, message)
-                    print("[DEBUG] Audio data sent to client.")
-                except Exception as e:
-                    print(f"[ERROR] Failed to send audio data: {e}")
-            else:
-                print("No sound found for the given text.")
+            print(f"Received message: {transcript.text}")
+            try:
+                if not self.music_sent_event.is_set():
+                    self.music_sent_event.set()
+                    # Send the initial MUSIC track
+                    filename, category = self.assigner_Music.retrieve_src_file(transcript.text)
+                    if filename:
+                        print(f"Sending initial MUSIC track for category '{category}' to client.")
+                        audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                        await self.send_audio_with_header(websocket, audio_bytes, "MUSIC")
+                        self.music_sent_event.set()  # Set flag to True after sending MUSIC
+                    else:
+                        print("No MUSIC found for the given text.")
+                else:
+                    # Send SFX track for subsequent messages
+                    filename, category = self.assigner_SFX.retrieve_src_file(transcript.text)
+                    if filename:
+                        print(f"Sending SFX for category '{category}' to client.")
+                        audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                        await self.send_audio_with_header(websocket, audio_bytes, "SFX")
+                    else:
+                        print("No SFX found for the given text.")
+            except Exception as e:
+                print(f"Error: {e}")
 
     def on_data(self, transcript, websocket, loop):
         asyncio.run_coroutine_threadsafe(self.process_transcript_async(transcript, websocket), loop)
@@ -129,7 +128,7 @@ class AudioServer:
                 print(f"Error: {e}")
 
     async def start_server(self):
-        server = await websockets.serve(self.txt_reciever, self.host, self.port)
+        server = await websockets.serve(self.audio_receiver, self.host, self.port)
         print(f"WebSocket server started on ws://{self.host}:{self.port}")
         await server.wait_closed()
 

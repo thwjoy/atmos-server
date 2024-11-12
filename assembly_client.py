@@ -93,30 +93,30 @@ async def receive_audio(websocket):
             print("Server disconnected")
             break
 
-async def poll_input():
-    """Poll for input without blocking"""
-    print("Enter a message: ", end="", flush=True)
-    loop = asyncio.get_running_loop()
-    while True:
-        # Check if there is input available without blocking
-        if await loop.run_in_executor(None, sys.stdin.readable):
-            # Read the line in a non-blocking way
-            message = await loop.run_in_executor(None, sys.stdin.readline)
-            await message_queue.put(message.strip())
-        await asyncio.sleep(0.1)  # Small delay to avoid busy-waiting
+# async def poll_input():
+#     """Poll for input without blocking"""
+#     print("Enter a message: ", end="", flush=True)
+#     loop = asyncio.get_running_loop()
+#     while True:
+#         # Check if there is input available without blocking
+#         if await loop.run_in_executor(None, sys.stdin.readable):
+#             # Read the line in a non-blocking way
+#             message = await loop.run_in_executor(None, sys.stdin.readline)
+#             await message_queue.put(message.strip())
+#         await asyncio.sleep(0.1)  # Small delay to avoid busy-waiting
             
 # send a message entered in command line to the server
-async def send_text(websocket):
-    while True:
-        message = await message_queue.get()
-        await websocket.send(message)
-        await asyncio.sleep(0.1)  # Small delay to allow message processing
+# async def send_text(websocket):
+#     while True:
+#         message = await message_queue.get()
+#         await websocket.send(message)
+#         await asyncio.sleep(0.1)  # Small delay to allow message processing
 
 async def main():
     async with websockets.connect(SERVER_URI) as websocket:
-        send_task = asyncio.create_task(send_text(websocket))
+        send_task = asyncio.create_task(send_audio(websocket))
         receive_task = asyncio.create_task(receive_audio(websocket))
-        input_task = asyncio.create_task(poll_input())
-        await asyncio.gather(send_task, receive_task, input_task)
+        # input_task = asyncio.create_task(poll_input())
+        await asyncio.gather(send_task, receive_task)
 
 asyncio.run(main())
