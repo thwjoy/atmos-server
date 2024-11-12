@@ -4,14 +4,16 @@ import pydub
 import soundfile as sf
 import sounddevice as sd
 import os
+import io
 import asyncio
 import websockets
 import json
 from assembly_db import SoundAssigner, OPENAI_API_KEY
+import struct
 
 aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094" 
 
-assigner = SoundAssigner(chroma_path="ESC-50")
+assigner = SoundAssigner(chroma_path="chroma_db")
 
 all_sounds = [
     "dog", "rain", "crying_baby", "door_knock", "helicopter",
@@ -26,7 +28,13 @@ all_sounds = [
     "crow", "thunderstorm", "drinking_sipping", "glass_breaking", "hand_saw"
 ]
 
-# Function to convert audio to WAV and read binary data
+async def send_audio_in_chunks(websocket, audio_bytes, chunk_size=1024 * 1000):
+    # Split audio bytes into smaller chunks
+    for i in range(0, len(audio_bytes), chunk_size):
+        chunk = audio_bytes[i:i + chunk_size]
+        await websocket.send(chunk)
+
+# # Function to convert audio to WAV and read binary data
 def get_audio_bytes(audio_path):
     pydub.AudioSegment.from_file(audio_path).export("temp.wav", format="wav")
     with open("temp.wav", "rb") as audio_file:
@@ -41,10 +49,11 @@ async def process_transcript_async(transcript, websocket):
         filename, category = assigner.retrieve_src_file(transcript.text)
         if filename is not None:
             print(f"Sending sound for category '{category}' to client.")
-            audio_bytes = get_audio_bytes(os.path.join("ESC-50-master/audio", filename))
+            audio_bytes = get_audio_bytes(os.path.join(filename))
+            message = struct.pack('!I', len(audio_bytes)) + audio_bytes
             try:
                 await websocket.send(category)  # Debug confirmation message
-                await websocket.send(audio_bytes)  # Send the actual audio bytes
+                await send_audio_in_chunks(websocket, message)
                 print("[DEBUG] Audio data sent to client.")
             except Exception as e:
                 print(f"[ERROR] Failed to send audio data: {e}")

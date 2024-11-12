@@ -4,6 +4,9 @@ import pyaudio
 import wave
 import io
 from concurrent.futures import ThreadPoolExecutor
+from pydub import AudioSegment
+import struct
+
 
 # ThreadPoolExecutor for running play_audio in a separate thread
 # executor = ThreadPoolExecutor(max_workers=1)
@@ -59,16 +62,33 @@ async def send_audio(websocket):
         p.terminate()
 
 async def receive_audio(websocket):
+    print("Listening for audio data...")
     while True:
-        # Explicitly receive each message without buffering
-        message = await websocket.recv()
-        # Check if the message is text or binary data
-        if isinstance(message, str):
-            # Handle text message
-            print(message)
-        else:
-            # Play the received audio data
-            await play_audio(message)
+        try:
+            # Receive each message from the server
+            message = await websocket.recv()
+            # Check if the message is text or binary data
+            if isinstance(message, str):
+                # Handle text messages, like notifications or category labels
+                print("Received text message:", message)
+            else:
+                audio_size = struct.unpack('!I', message[:4])[0]
+                accumulated_audio = message[4:]
+
+                # Keep receiving data until the accumulated data matches the expected audio size
+                while len(accumulated_audio) < audio_size:
+                    chunk = await websocket.recv()
+                    accumulated_audio += chunk
+
+                # Once all data is received, decompress and play
+                # audio_stream = io.BytesIO(accumulated_audio)
+
+                # Play the accumulated and decompressed audio
+                await play_audio(accumulated_audio)
+        
+        except websockets.ConnectionClosed:
+            print("Server disconnected")
+            break
 
 
 async def main():
