@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import websockets
 import pyaudio
 import wave
@@ -7,9 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pydub import AudioSegment
 import struct
 
-
-# ThreadPoolExecutor for running play_audio in a separate thread
-# executor = ThreadPoolExecutor(max_workers=1)
+message_queue = asyncio.Queue()
 
 # WebSocket server URL
 SERVER_URI = "ws://localhost:8765"  # Replace <server_ip> with your server's IP
@@ -36,6 +35,7 @@ def play_audio_sync(audio_bytes):
     stream.stop_stream()
     stream.close()
     audio.terminate()
+    print("Audio playback complete.")
 
 async def play_audio(audio_bytes):
     """Runs play_audio_sync in a background thread."""
@@ -63,6 +63,9 @@ async def send_audio(websocket):
 
 async def receive_audio(websocket):
     print("Listening for audio data...")
+    HEADER_FORMAT = '!5sI'  # Matches server's format: 5-byte indicator, 4-byte audio size
+    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+
     while True:
         try:
             # Receive each message from the server
@@ -72,29 +75,48 @@ async def receive_audio(websocket):
                 # Handle text messages, like notifications or category labels
                 print("Received text message:", message)
             else:
-                audio_size = struct.unpack('!I', message[:4])[0]
-                accumulated_audio = message[4:]
+                # Unpack the header
+                indicator, audio_size = struct.unpack(HEADER_FORMAT, message[:HEADER_SIZE])
+                indicator = indicator.decode().strip()  # Convert bytes to string and remove any padding
+                
+                # Receive the audio data in chunks until complete
+                accumulated_audio = message[HEADER_SIZE:]
 
                 # Keep receiving data until the accumulated data matches the expected audio size
                 while len(accumulated_audio) < audio_size:
                     chunk = await websocket.recv()
                     accumulated_audio += chunk
 
-                # Once all data is received, decompress and play
-                # audio_stream = io.BytesIO(accumulated_audio)
+                asyncio.create_task(play_audio(accumulated_audio))  # Play in the background
 
-                # Play the accumulated and decompressed audio
-                await play_audio(accumulated_audio)
-        
         except websockets.ConnectionClosed:
             print("Server disconnected")
             break
 
+async def poll_input():
+    """Poll for input without blocking"""
+    print("Enter a message: ", end="", flush=True)
+    loop = asyncio.get_running_loop()
+    while True:
+        # Check if there is input available without blocking
+        if await loop.run_in_executor(None, sys.stdin.readable):
+            # Read the line in a non-blocking way
+            message = await loop.run_in_executor(None, sys.stdin.readline)
+            await message_queue.put(message.strip())
+        await asyncio.sleep(0.1)  # Small delay to avoid busy-waiting
+            
+# send a message entered in command line to the server
+async def send_text(websocket):
+    while True:
+        message = await message_queue.get()
+        await websocket.send(message)
+        await asyncio.sleep(0.1)  # Small delay to allow message processing
 
 async def main():
     async with websockets.connect(SERVER_URI) as websocket:
-        send_task = asyncio.create_task(send_audio(websocket))
+        send_task = asyncio.create_task(send_text(websocket))
         receive_task = asyncio.create_task(receive_audio(websocket))
-        await asyncio.gather(send_task, receive_task)
+        input_task = asyncio.create_task(poll_input())
+        await asyncio.gather(send_task, receive_task, input_task)
 
 asyncio.run(main())
