@@ -19,10 +19,10 @@ CHUNK_SIZE = 1024  # Number of frames per buffer
 FORMAT = pyaudio.paInt16  # 16-bit audio format
 CHANNELS = 1
 
-def play_audio_sync(audio_bytes):
+def play_audio_sync(audio_bytes, sample_rate=SAMPLE_RATE):
     """Plays the received audio data."""
     audio = pyaudio.PyAudio()
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, output=True)
+    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=sample_rate, output=True)
 
     # Use a BytesIO stream to read the audio bytes
     with io.BytesIO(audio_bytes) as audio_stream:
@@ -37,9 +37,9 @@ def play_audio_sync(audio_bytes):
     audio.terminate()
     print("Audio playback complete.")
 
-async def play_audio(audio_bytes):
+async def play_audio(audio_bytes, sample_rate):
     """Runs play_audio_sync in a background thread."""
-    await asyncio.to_thread(play_audio_sync, audio_bytes)
+    await asyncio.to_thread(play_audio_sync, audio_bytes, sample_rate)
 
 async def send_audio(websocket):
     p = pyaudio.PyAudio()
@@ -63,7 +63,7 @@ async def send_audio(websocket):
 
 async def receive_audio(websocket):
     print("Listening for audio data...")
-    HEADER_FORMAT = '!5sI'  # Matches server's format: 5-byte indicator, 4-byte audio size
+    HEADER_FORMAT = '>5sII'  # Matches server's format: 5-byte indicator, 4-byte audio size
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
 
     while True:
@@ -76,9 +76,9 @@ async def receive_audio(websocket):
                 print("Received text message:", message)
             else:
                 # Unpack the header
-                indicator, audio_size = struct.unpack(HEADER_FORMAT, message[:HEADER_SIZE])
+                indicator, audio_size, sample_rate = struct.unpack(HEADER_FORMAT, message[:HEADER_SIZE])
                 indicator = indicator.decode().strip()  # Convert bytes to string and remove any padding
-                
+                print(indicator, audio_size, sample_rate)
                 # Receive the audio data in chunks until complete
                 accumulated_audio = message[HEADER_SIZE:]
 
@@ -87,7 +87,7 @@ async def receive_audio(websocket):
                     chunk = await websocket.recv()
                     accumulated_audio += chunk
 
-                asyncio.create_task(play_audio(accumulated_audio))  # Play in the background
+                asyncio.create_task(play_audio(accumulated_audio, sample_rate=sample_rate))  # Play in the background
 
         except websockets.ConnectionClosed:
             print("Server disconnected")

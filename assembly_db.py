@@ -1,5 +1,5 @@
 import argparse
-# import re
+import re
 import pandas as pd
 import os
 from langchain.embeddings.openai import OpenAIEmbeddings
@@ -10,6 +10,12 @@ import chromadb
 OPENAI_API_KEY = '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'
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
+def format_to_sentence(text):
+    # Replace hyphens and underscores with spaces
+    sentence = text.replace("-", " ").replace("_", " ")
+    # Remove extra spaces and punctuation from multiple hyphens or underscores
+    sentence = re.sub(r'\s+', ' ', sentence).strip()
+    return sentence.capitalize()  # Capitalize the first letter
 
 class SoundAssigner:
     def __init__(self, chroma_path):
@@ -46,7 +52,7 @@ class SoundAssigner:
         data = pd.DataFrame(columns=["category", "filename"])
         for root, dirs, files in os.walk(path):
             for file in files:
-                name = file.split(".")[0]
+                name = format_to_sentence(file.split(".")[0])
                 data = pd.concat([data, pd.DataFrame([{"category": name, "filename": os.path.join(root, file)}])], ignore_index=True)
         self.load_to_db(data)
 
@@ -78,7 +84,7 @@ class SoundAssigner:
         # Query Chroma database for the closest match
         results = self.collection.query(embedding_vector)
         if results['metadatas']:
-            return results['metadatas'][0][0]['filename'], results['ids'][0][0]
+            return results['metadatas'][0][0]['filename'], results['ids'][0][0], results['distances'][0][0]
         else:
             return None
 
@@ -99,6 +105,6 @@ if __name__ == "__main__":
         assigner.load_SA_to_db(args.sa_path)
     # assigner.load_csv_to_db_ESC(args.csv_path)
     # Example word retrieval
-    test_word = "Jungle"
-    src_file = assigner.retrieve_src_file(test_word)
-    print(f"Source file for '{test_word}': {src_file}")
+    test_word = "adventure"
+    filename, ids, score = assigner.retrieve_src_file(test_word)
+    print(f"Closest match for '{test_word}': {ids} with score {score}")
