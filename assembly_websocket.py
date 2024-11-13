@@ -1,4 +1,5 @@
 import base64
+import io
 from typing import Optional
 import assemblyai as aai
 import pydub
@@ -60,23 +61,32 @@ class AudioServer:
         
     def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
-        completion = self.client.chat.completions.create(
-            model="gpt-4o-audio-preview",
-            modalities=["text", "audio"],
+        self.transcript += transcript
+        chat = self.client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            modalities=["text"],
             audio={"voice": "alloy", "format": "wav"},
             messages=[
                 {"role": "system", "content": """You are a helpful assistent
                  who is going to make a story with me. I will start the story
-                 and you will continue it. Once you are done, I will continue.
-                 The story should be around 3 minutes long and is for children."""},
+                 and you will continue it. Once you have writen a few sentences,
+                 I will then take over, and we will keep going until we are finished.
+                 Keep your sections to 2 or 3 sentences."""},
                 {
                     "role": "user",
-                    "content": transcript
+                    "content": self.transcript
                 }
             ]
         )
 
-        return completion.choices[0].message.audio.data, completion.choices[0].message.audio.transcript
+        audio = self.client.audio.speech.create(
+            model="tts-1",
+            voice="alloy",
+            response_format="wav",
+            input=chat.choices[0].message.content,
+        )
+
+        return audio.content, chat.choices[0].message.content
 
 
     async def send_audio_in_chunks(self, websocket, audio_bytes, chunk_size=1024 * 1000):
@@ -92,30 +102,35 @@ class AudioServer:
         message = header + audio_bytes  # Combine header and audio bytes
         await self.send_audio_in_chunks(websocket, message)
 
-    async def send_audio_from_transcript(self, transcript, websocket):
+    async def send_music_from_transcript(self, transcript, websocket):
         try:
-            if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-                self.music_sent_event.set()
-                # Send the initial MUSIC track
-                filename, category, score = self.assigner_Music.retrieve_src_file(transcript)
-                if filename:
-                    print(f"Sending initial MUSIC track for category '{category}' to client with score: {score} from {self.transcript}.")
-                    audio_bytes = self.get_audio_bytes(os.path.join(filename))
-                    await self.send_audio_with_header(websocket, audio_bytes, "MUSIC")
-                    self.music_sent_event.set()  # Set flag to True after sending MUSIC
-                else:
-                    print("No MUSIC found for the given text.")
+            filename, category, score = self.assigner_Music.retrieve_src_file(transcript)
+            if filename:
+                print(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
+                audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                await self.send_audio_with_header(websocket, audio_bytes, "MUSIC")
             else:
-                # Send SFX track for subsequent messages
-                filename, category, score = self.assigner_SFX.retrieve_src_file(transcript)
-                if filename:
-                    print(f"Sending SFX for category '{category}' to client from {transcript}.")
-                    audio_bytes = self.get_audio_bytes(os.path.join(filename))
-                    await self.send_audio_with_header(websocket, audio_bytes, "SFX")
-                else:
-                    print("No SFX found for the given text.")
+                print("No MUSIC found for the given text.")
         except Exception as e:
             print(f"Error: {e}")
+
+    async def send_sfx_from_transcript(self, transcript, websocket):
+        try:
+            filename, category, score = self.assigner_SFX.retrieve_src_file(transcript)
+            if filename:
+                print(f"Sending SFX for category '{category}' to client with score: {score}.")
+                audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                await self.send_audio_with_header(websocket, audio_bytes, "SFX")
+            else:
+                print("No SFX found for the given text.")
+        except Exception as e:
+            print(f"Error: {e}")
+
+    async def send_audio_from_transcript(self, transcript, websocket):
+        audio, transcript = self.get_next_story_section(transcript)
+        print(f"Sending story snippet: {transcript}")
+        await self.send_audio_with_header(websocket, audio, "STORY", 24000)
+
 
     async def process_transcript_async(self, transcript, websocket):
         if not transcript.text:
@@ -125,10 +140,13 @@ class AudioServer:
             # if len(self.transcript) < 20: # TODO fix this
             #     self.transcript += transcript.text
             #     return
-            await self.send_audio_from_transcript(transcript.text, websocket)
-            # send an audio snippet of a story
-            audio, transcript = self.get_next_story_section(transcript.text)
-            await self.send_audio_with_header(websocket, base64.b64decode(audio), "STORY", 24000)
+            if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
+                self.music_sent_event.set()
+                await self.send_music_from_transcript(transcript.text, websocket)
+                await self.send_audio_from_transcript(transcript.text, websocket)
+            else:
+                await self.send_sfx_from_transcript(transcript.text, websocket)
+                await self.send_audio_from_transcript(transcript.text, websocket)
 
 
     def on_data(self, transcript, websocket, loop):
@@ -171,7 +189,7 @@ class AudioServer:
     @staticmethod
     async def start_server(host="0.0.0.0", port=8765):
         print(f"Starting WebSocket server on ws://{host}:{port}")
-        async with websockets.serve(AudioServer.connection_handler, host, port):
+        async with websockets.serve(AudioServer.connection_handler, host, port, ping_interval=300, ping_timeout=300):
             await asyncio.Future()  # Run forever
 
     @staticmethod

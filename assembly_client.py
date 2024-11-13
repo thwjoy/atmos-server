@@ -1,5 +1,5 @@
 import asyncio
-import sys
+import numpy as np
 import websockets
 import pyaudio
 import wave
@@ -19,8 +19,10 @@ CHUNK_SIZE = 1024  # Number of frames per buffer
 FORMAT = pyaudio.paInt16  # 16-bit audio format
 CHANNELS = 1
 
-def play_audio_sync(audio_bytes, sample_rate=SAMPLE_RATE):
-    """Plays the received audio data."""
+playing_narration = asyncio.Event()
+
+def play_audio_sync(audio_bytes, sample_rate=SAMPLE_RATE, volume=1.0):
+    """Plays the received audio data with adjustable volume."""
     audio = pyaudio.PyAudio()
     stream = audio.open(format=FORMAT, channels=CHANNELS, rate=sample_rate, output=True)
 
@@ -29,7 +31,19 @@ def play_audio_sync(audio_bytes, sample_rate=SAMPLE_RATE):
         wave_file = wave.open(audio_stream, "rb")
         data = wave_file.readframes(CHUNK_SIZE)
         while data:
-            stream.write(data)
+            # Convert audio data to numpy array
+            audio_array = np.frombuffer(data, dtype=np.int16)
+            
+            # Apply volume adjustment
+            audio_array = (audio_array * volume).astype(np.int16)
+            
+            # Convert back to bytes
+            adjusted_data = audio_array.tobytes()
+            
+            # Play adjusted data
+            stream.write(adjusted_data)
+            
+            # Read the next chunk of audio data
             data = wave_file.readframes(CHUNK_SIZE)
 
     stream.stop_stream()
@@ -51,9 +65,10 @@ async def send_audio(websocket):
             # Read audio chunk from the microphone
             audio_chunk = stream.read(CHUNK_SIZE, exception_on_overflow=False)
             # Send audio chunk to the server
-            await websocket.send(audio_chunk)
-            # TODO check this
-            await asyncio.sleep(0)
+            if not playing_narration.is_set():
+                await websocket.send(audio_chunk)
+                # TODO check this
+                await asyncio.sleep(0)
     except KeyboardInterrupt:
         print("Stopped streaming.")
     finally:
@@ -86,8 +101,13 @@ async def receive_audio(websocket):
                 while len(accumulated_audio) < audio_size:
                     chunk = await websocket.recv()
                     accumulated_audio += chunk
-
-                asyncio.create_task(play_audio(accumulated_audio, sample_rate=sample_rate))  # Play in the background
+                
+                if indicator == "STORY":
+                    playing_narration.set()
+                    play_audio_sync(accumulated_audio, sample_rate, volume=1.3)
+                    playing_narration.clear()
+                else:
+                    asyncio.create_task(play_audio(accumulated_audio, sample_rate=sample_rate))  # Play in the background
 
         except websockets.ConnectionClosed:
             print("Server disconnected")
