@@ -7,8 +7,10 @@ import asyncio
 import websockets
 import struct
 import os
+from whisper_realtime import RealTimeTranscriber
 from assembly_db import SoundAssigner, OPENAI_API_KEY
 from openai import OpenAI
+import soundfile as sf
 
 import librosa
 import numpy as np
@@ -17,6 +19,23 @@ import numpy as np
 SAMPLE_RATE = 44100
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
+
+def load_wav_from_bytes(byte_data):
+    # Use soundfile to read from the bytes object
+    with io.BytesIO(byte_data) as bytes_io:
+        audio_data, sample_rate = sf.read(bytes_io, dtype='float32')  # or 'float32' for normalized values
+    return sample_rate, np.array(audio_data)
+
+def audio_to_bytes(audio_data, sample_rate):
+    # Create an in-memory byte buffer
+    with io.BytesIO() as buffer:
+        # Write the audio data to the buffer as a WAV file
+        sf.write(buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
+        
+        # Retrieve the byte data from the buffer
+        audio_bytes = buffer.getvalue()
+        
+    return audio_bytes
 
 def resample_audio(audio, orig_sample_rate, target_sample_rate=44100):
     # Convert the audio to a numpy array if it's not already
@@ -71,7 +90,7 @@ class AudioServer:
                  who is going to make a story with me. I will start the story
                  and you will continue it. Once you have writen a few sentences,
                  I will then take over, and we will keep going until we are finished.
-                 Keep your sections to 2 or 3 sentences."""},
+                 Keep your sections to 2 or 3 sentences maximum."""},
                 {
                     "role": "user",
                     "content": self.transcript
@@ -79,6 +98,7 @@ class AudioServer:
             ]
         )
 
+        print(f"ChatGPT response: {chat.choices[0].message.content}")
         audio = self.client.audio.speech.create(
             model="tts-1",
             voice="alloy",
@@ -128,8 +148,22 @@ class AudioServer:
 
     async def send_audio_from_transcript(self, transcript, websocket):
         audio, transcript = self.get_next_story_section(transcript)
+        # convert the audio bytes into a wavfile and load as numpy
+        sample_rate, audio = load_wav_from_bytes(audio)
+        whisper_sample_rate = 16000
+        audio = resample_audio(audio, sample_rate, whisper_sample_rate)
+        duration = min(10, np.floor(len(audio) / whisper_sample_rate))
+        transcriber = RealTimeTranscriber(
+                    book=transcript,
+                    line_offset=0,
+                    chunk_duration=duration,
+                    audio_window=duration,
+        )
+        transcriber.process_audio_file(audio)
+        # convert audio back to bytes
+        audio = audio_to_bytes(audio, whisper_sample_rate)
         print(f"Sending story snippet: {transcript}")
-        await self.send_audio_with_header(websocket, audio, "STORY", 24000)
+        await self.send_audio_with_header(websocket, audio, "STORY", whisper_sample_rate)
 
 
     async def process_transcript_async(self, transcript, websocket):
