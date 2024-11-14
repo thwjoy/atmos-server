@@ -266,10 +266,13 @@ class RealTimeTranscriber:
         elif not self.full_data.empty:
             time_stamp += self.full_data.iloc[-1].end
         return time_stamp
+    
+    def get_df(self):
+        return pd.concat([self.full_data, self.curr_data], ignore_index=True)
 
     def print_and_save_df(self, file_name):
         pd.set_option('display.max_rows', None)
-        df = pd.concat([transcriber.full_data, transcriber.curr_data], ignore_index=True)
+        df = self.get_df()
         df.to_csv(file_name)
         print(df)
 

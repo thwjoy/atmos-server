@@ -79,7 +79,7 @@ class AudioServer:
         pydub.AudioSegment.from_file(audio_path).export("temp.wav", format="wav")
         with open("temp.wav", "rb") as audio_file:
             return audio_file.read()
-   
+            
     def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
         self.transcript += transcript
@@ -135,9 +135,13 @@ class AudioServer:
 
         # print(f"array_literal: {array_literal}")
         words = [word for word, sound in array_literal if sound is None]
+        sounds = [sound for word, sound in array_literal if sound is not None]
+        print(f"Sounds: {sounds}")
         sentence = " ".join(words)
-        # print(f"Words: {words}")
+        print(f"Words: {words}")
         # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
+        # sentence = chat.choices[0].message.content
+        # sounds = []
 
         audio = self.client.audio.speech.create(
             model="tts-1",
@@ -149,12 +153,7 @@ class AudioServer:
         self.transcript += " " + sentence
         print("Transcript: ", self.transcript)
 
-        # exract the words and sounds in the story
-        # words = [word for word, sound in chat.choices[0].message.content if sound is None]
-        # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
-
-
-        return audio.content, sentence, None
+        return audio.content, sentence, sounds
 
 
     async def send_audio_in_chunks(self, websocket, audio_bytes, chunk_size=1024 * 1000):
@@ -196,7 +195,11 @@ class AudioServer:
 
     def add_sounds_to_audio(self, audio, sounds, timestamps, sample_rate):
         """ for each sound, find the timestamp in timestamps df and insert into audio array"""
-        pass
+        # loop through each row of timestamps and use word column to find the sound
+        for idx, row in timestamps.iterrows():
+            # match the sound to the word
+            filename, category, score = self.assigner_SFX.retrieve_src_file(row['word'])
+        return audio
 
 
     async def send_audio_from_transcript(self, transcript, websocket):
@@ -206,15 +209,17 @@ class AudioServer:
         whisper_sample_rate = 16000
         audio = resample_audio(audio, sample_rate, whisper_sample_rate)
         duration = min(10, np.floor(len(audio) / whisper_sample_rate))
-        # transcriber = RealTimeTranscriber(
-        #             book=transcript,
-        #             line_offset=0,
-        #             chunk_duration=duration,
-        #             audio_window=duration,
-        # )
-        # transcriber.process_audio_file(audio)
-        # insert the sounds into the audio
-        # self.add_sounds_to_audio(audio, sounds, transcriber.get_last_word_timestamp(), whisper_sample_rate)
+        # try:
+        #     transcriber = RealTimeTranscriber(
+        #                 book=transcript,
+        #                 line_offset=0,
+        #                 chunk_duration=10,
+        #                 audio_window=10,
+        #     )
+        #     transcriber.process_audio_file(audio)
+        #     audio = self.add_sounds_to_audio(audio, sounds, transcriber.get_df(), whisper_sample_rate)
+        # except Exception as e:
+        #     print(f"Error: {e}")
         audio = audio_to_bytes(audio, whisper_sample_rate)
         print(f"Sending story snippet: {transcript}")
         await self.send_audio_with_header(websocket, audio, "STORY", whisper_sample_rate)
@@ -231,10 +236,10 @@ class AudioServer:
             if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
                 self.music_sent_event.set()
                 await self.send_music_from_transcript(transcript.text, websocket)
-                await self.send_audio_from_transcript(transcript.text, websocket)
+                # await self.send_audio_from_transcript(transcript.text, websocket)
             else:
                 await self.send_sfx_from_transcript(transcript.text, websocket)
-                await self.send_audio_from_transcript(transcript.text, websocket)
+                # await self.send_audio_from_transcript(transcript.text, websocket)
 
 
     def on_data(self, transcript, websocket, loop):
