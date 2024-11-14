@@ -1,5 +1,7 @@
+import ast
 import base64
 import io
+import re
 from typing import Optional
 import assemblyai as aai
 import pydub
@@ -77,36 +79,82 @@ class AudioServer:
         pydub.AudioSegment.from_file(audio_path).export("temp.wav", format="wav")
         with open("temp.wav", "rb") as audio_file:
             return audio_file.read()
-        
+   
     def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
         self.transcript += transcript
+        print(self.transcript)
         chat = self.client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model="gpt-4o",
             modalities=["text"],
             audio={"voice": "alloy", "format": "wav"},
             messages=[
-                {"role": "system", "content": """You are a helpful assistent
+                {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
                  and you will continue it. Once you have writen a few sentences,
                  I will then take over, and we will keep going until we are finished.
-                 Keep your sections to 2 or 3 sentences maximum."""},
+                 Keep your sections to 2 or 3 sentences maximum.
+
+                 The story is for children under 10, keep the language simple and the story fun.
+
+                 Do not repeat the story I have already written. You should make new words.
+
+                 I also want you to add sounds to each word you have written, where the first element is the 
+                 word and the second element contains None. Do not add any other information
+                 apart from this list. The response should look like this:
+
+                 <your addition to the story>
+
+                 output = [('word', None), ..., ('word', None)]
+
+                 """
+                 },
                 {
                     "role": "user",
                     "content": self.transcript
                 }
             ]
         )
+        # print(f"ChatGPT response: {chat.choices[0].message.content}")
+        # try get the literal
+        try:
+            response = chat.choices[0].message.content
+            response = response.replace("“", "'").replace("”", "'")
+            match = re.search(r"\[.*\]", response)
+            if match:
+                array_text = match.group(0)
+                # Safely evaluate the array text as a Python literal
+                array_literal = ast.literal_eval(array_text)
+            else:
+                print("No array found in the text.")
+                response = "I didn't catch that, can you try again?".split(" ")
+                array_literal = [(word, None) for word in response]
+        except:
+            response = "I didn't catch that, can you try again?".split(" ")
+            array_literal = [(word, None) for word in response]
 
-        print(f"ChatGPT response: {chat.choices[0].message.content}")
+        # print(f"array_literal: {array_literal}")
+        words = [word for word, sound in array_literal if sound is None]
+        sentence = " ".join(words)
+        # print(f"Words: {words}")
+        # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
+
         audio = self.client.audio.speech.create(
             model="tts-1",
             voice="alloy",
             response_format="wav",
-            input=chat.choices[0].message.content,
+            input=sentence,
         )
+        print(f"Generated narration")
+        self.transcript += " " + sentence
+        print("Transcript: ", self.transcript)
 
-        return audio.content, chat.choices[0].message.content
+        # exract the words and sounds in the story
+        # words = [word for word, sound in chat.choices[0].message.content if sound is None]
+        # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
+
+
+        return audio.content, sentence, None
 
 
     async def send_audio_in_chunks(self, websocket, audio_bytes, chunk_size=1024 * 1000):
@@ -146,21 +194,27 @@ class AudioServer:
         except Exception as e:
             print(f"Error: {e}")
 
+    def add_sounds_to_audio(self, audio, sounds, timestamps, sample_rate):
+        """ for each sound, find the timestamp in timestamps df and insert into audio array"""
+        pass
+
+
     async def send_audio_from_transcript(self, transcript, websocket):
-        audio, transcript = self.get_next_story_section(transcript)
+        audio, transcript, sounds = self.get_next_story_section(transcript)
         # convert the audio bytes into a wavfile and load as numpy
         sample_rate, audio = load_wav_from_bytes(audio)
         whisper_sample_rate = 16000
         audio = resample_audio(audio, sample_rate, whisper_sample_rate)
         duration = min(10, np.floor(len(audio) / whisper_sample_rate))
-        transcriber = RealTimeTranscriber(
-                    book=transcript,
-                    line_offset=0,
-                    chunk_duration=duration,
-                    audio_window=duration,
-        )
-        transcriber.process_audio_file(audio)
-        # convert audio back to bytes
+        # transcriber = RealTimeTranscriber(
+        #             book=transcript,
+        #             line_offset=0,
+        #             chunk_duration=duration,
+        #             audio_window=duration,
+        # )
+        # transcriber.process_audio_file(audio)
+        # insert the sounds into the audio
+        # self.add_sounds_to_audio(audio, sounds, transcriber.get_last_word_timestamp(), whisper_sample_rate)
         audio = audio_to_bytes(audio, whisper_sample_rate)
         print(f"Sending story snippet: {transcript}")
         await self.send_audio_with_header(websocket, audio, "STORY", whisper_sample_rate)
@@ -197,7 +251,7 @@ class AudioServer:
             on_open=lambda session: print("Session ID:", session.session_id),
             on_close=self.on_close,
             word_boost=self.all_sounds,
-            end_utterance_silence_threshold=1000
+            end_utterance_silence_threshold=1500
         )
 
         try:

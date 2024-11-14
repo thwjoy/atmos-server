@@ -104,7 +104,7 @@ async def receive_audio(websocket):
                 
                 if indicator == "STORY":
                     playing_narration.set()
-                    play_audio_sync(accumulated_audio, sample_rate, volume=1.3)
+                    play_audio_sync(accumulated_audio, sample_rate, volume=2.0)
                     playing_narration.clear()
                 else:
                     asyncio.create_task(play_audio(accumulated_audio, sample_rate=sample_rate))  # Play in the background
