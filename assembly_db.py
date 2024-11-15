@@ -46,6 +46,12 @@ class SoundAssigner:
         data['filename'] = data['filename'].apply(lambda x: os.path.join("ESC-50-master/audio", x))
         self.load_to_db(data)
 
+    def load_csv_to_db(self, csv_path):
+        """Load a CSV, create embeddings for 'category' column, and store in Chroma DB."""
+        print("Creating Chroma database...")
+        data = pd.read_csv(csv_path)
+        self.load_to_db(data)        
+
     def load_SA_to_db(self, path):
         """Loads the files in path and gets the description from their name"""
         print("Creating Chroma database...")
@@ -60,7 +66,7 @@ class SoundAssigner:
         
         # Generate embeddings for each category word and store them with src_file metadata
         for _, row in data.iterrows():
-            word = row['category']
+            word = row['description']
             src_file = row['filename']
             
             # Get embedding for the word in the category column
@@ -100,11 +106,11 @@ if __name__ == "__main__":
     # check if chroma exisits
     # if not os.path.exists(args.chroma_path):
     if args.csv_path is not None:
-        assigner.load_csv_to_db_ESC(args.csv_path)
+        assigner.load_csv_to_db(args.csv_path)
     if args.sa_path is not None:
         assigner.load_SA_to_db(args.sa_path)
     # assigner.load_csv_to_db_ESC(args.csv_path)
     # Example word retrieval
-    test_word = "adventure"
+    test_word = "cow"
     filename, ids, score = assigner.retrieve_src_file(test_word)
     print(f"Closest match for '{test_word}': {ids} with score {score}")

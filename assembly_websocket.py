@@ -57,7 +57,7 @@ class AudioServer:
         self.music_sent_event = asyncio.Event()  # Track whether a MUSIC track has been sent
         self.audio_lock = asyncio.Lock()  # Lock to prevent simultaneous audio sends
         aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094"
-        self.assigner_SFX = SoundAssigner(chroma_path="ESC-50_db")
+        self.assigner_SFX = SoundAssigner(chroma_path="SFX_db")
         self.assigner_Music = SoundAssigner(chroma_path="SA_db")
         self.transcript = ""
         self.story = ""
