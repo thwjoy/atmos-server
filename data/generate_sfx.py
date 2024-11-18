@@ -8,11 +8,17 @@ from tkinter.filedialog import Open
 from openai import OpenAI
 from elevenlabs import ElevenLabs
 
-OPENAI_API_KEY = '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'
+# add constants to path
+import sys
+sys.path.append('..')
+from keys import OPENAI_API_KEY
+from keys import ELEVENLABS_API_KEY
+
+
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 client = ElevenLabs(
-    api_key="sk_1d256eadec2d0e592de981e3abd82ca61ccf1a449c510897",
+    api_key=ELEVENLABS_API_KEY,
 )
 
 # Placeholder for the audio generation function

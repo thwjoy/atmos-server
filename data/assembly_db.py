@@ -5,11 +5,6 @@ import os
 from langchain.embeddings.openai import OpenAIEmbeddings
 from openai import OpenAI
 import chromadb
-from tqdm import tqdm
-
-# Set your OpenAI API key
-OPENAI_API_KEY = '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'
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
 def format_to_sentence(text):
     # Replace hyphens and underscores with spaces

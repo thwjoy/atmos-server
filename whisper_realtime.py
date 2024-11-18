@@ -1,3 +1,4 @@
+import re
 import time
 import numpy as np
 import pandas as pd
@@ -75,7 +76,7 @@ class RealTimeTranscriber:
         self.audio_complete = np.empty(0, dtype=np.int16)
         self.duration_offset = 0
         self.token_offset = 0
-        self.token_window = token_window # this should be at least 
+        self.token_window = min(token_window, 441) # this should be at least 
         self.audio_window = audio_window # seconds
         self.curr_toks = []
         self.full_data = pd.DataFrame(columns=["word", "word_token", "begin", "end", "diff"])
@@ -83,8 +84,8 @@ class RealTimeTranscriber:
 
         self.book = book
         self.line_offset = line_offset
-        line_width = 3
-        self.transcription = get_transcript_from_book(book, self.line_offset, self.line_offset + line_width)
+        line_width = 2
+        self.transcription = book #get_transcript_from_book(book, self.line_offset, self.line_offset + line_width)
         self.line_offset += line_width
         self.tokenizer = whisper.tokenizer.get_tokenizer(self.model.is_multilingual, language=language)
         self.transcipt_tokens = self.tokenizer.encode(self.transcription)
@@ -166,11 +167,6 @@ class RealTimeTranscriber:
         self.audio_complete = np.concatenate([self.audio_complete, new_audio])
         # self.audio_full = np.concatenate([self.audio_full, new_audio])
 
-        # save the audio
-        wavfile.write(f"buffers/buffer_vad_{self.vad_level}.wav",
-                        self.sampling_rate,
-                        self.audio_complete)
-
         if len(self.audio_complete[self.duration_offset:]) > (self.sampling_rate * self.audio_window):
             # append curr_data that has a timestamp less than self.duration_offset to full_data
             self.duration_offset += len(new_audio)
@@ -187,15 +183,15 @@ class RealTimeTranscriber:
             curr_toks = [token for tokens in copy_df.word_token for token in tokens]
             _, paths = warping_paths(self.transcipt_tokens, curr_toks, psi=0)
             min_index = int(np.argmin(paths[:, -1]))
-            # self.token_offset += min_index
-            self.transcipt_tokens = self.transcipt_tokens[min_index:]
+            self.token_offset += min_index
+            # self.transcipt_tokens = self.transcipt_tokens[min_index:]
 
         # check if we have enough tokens in the buffer
-        if len(self.transcipt_tokens) - self.token_offset < self.token_window:
-            # add more tokens to the buffer
-            new_line = get_transcript_from_book(self.book, self.line_offset, self.line_offset + 1)
-            self.line_offset += 1
-            self.transcipt_tokens += self.tokenizer.encode(new_line)
+        # if len(self.transcipt_tokens) - self.token_offset < self.token_window:
+        #     # add more tokens to the buffer
+        #     new_line = get_transcript_from_book(self.book, self.line_offset, self.line_offset + 1)
+        #     self.line_offset += 1
+        #     self.transcipt_tokens += self.tokenizer.encode(new_line)
 
         self.transcribe_chunk()
         print(f"Current trsncription: {self.get_transcript()}")
@@ -249,7 +245,8 @@ class RealTimeTranscriber:
             if not word.startswith("<|") and word.strip() not in ".,!?、。" and diff > 0.01
         ])
 
-        # if self.curr_data.empty:
+        if self.curr_data.empty:
+            import pdb; pdb.set_trace()
 
         self.out_transcript = self.get_transcript()
         
@@ -269,12 +266,14 @@ class RealTimeTranscriber:
     
     def get_df(self):
         return pd.concat([self.full_data, self.curr_data], ignore_index=True)
-
-    def print_and_save_df(self, file_name):
-        pd.set_option('display.max_rows', None)
+    
+    def save_df(self, file_name):
         df = self.get_df()
         df.to_csv(file_name)
-        print(df)
+
+    def print_df(self, file_name):
+        pd.set_option('display.max_rows', None)
+        print(self.get_df())
 
     def process_audio_file(self, audio_data):
         """Loads, resamples, normalizes, and processes an audio file in chunks."""
@@ -294,12 +293,33 @@ class RealTimeTranscriber:
 if __name__ == "__main__":
     # Define parameters for RealTimeTranscriber
     # load in the book
-    with open("example.txt", "r") as file:
-        book = file.read()
+    book = """In the heart of the mysterious Whispering Woods, young Ella and her trusty dog, Max, were on an adventure. The forest was alive with the soft rustling of leaves, whispering secrets only the trees knew [SFX: Leaves_rustling_gently_in_the_.wav], while an eerie wind howled through the ancient branches [SFX: Eerie_wind_howling_through_a_f.wav]. 
+
+As they ventured deeper, the forest seemed to close in around them, the shadows lengthening [SFX: Ghostly_footsteps_softly_tread.wav]. A distant wolf's mournful howl sent shivers down Ella's spine [SFX: A_distant_wolf's_mournful_howl.wav], but Max stayed bravely by her side, his ears perked.
+
+Suddenly, the soft flutter of bat wings echoed above them [SFX: The_soft_flutter_of_bat_wings_.wav], followed by the sinister rustle of leaves in a nearby bush [SFX: The_rustle_of_leaves_in_a_sini.wav]. Ella clutched Max's fur, her heart pounding like a drum.
+
+They stumbled upon an ancient, creaky wooden cabin, its door ominously swinging open with a chilling creak [SFX: The_creak_of_a_slowly_opening_.wav]. Inside, the air was thick with the mysterious chanting of an ancient spell [SFX: Mysterious_chanting_of_an_anci.wav].
+
+As they entered, the room was filled with unearthly whispers carried on the breeze [SFX: Unearthly_whispers_carried_on_.wav]. The sound of chains rattling ominously added to the feeling of dread [SFX: Chains_rattling_ominously_in_a.wav]. 
+
+Max whimpered slightly, but Ella reassured him with a soft pat on his head. The spectral bell tolling in the distance seemed to mark the beginning of something momentous [SFX: A_spectral_bell_tolling_at_the.wav].
+
+Suddenly, the bubbling of a witch's cauldron drew their attention, the room filled with an eerie glow [SFX: The_bubbling_of_a_witch's_caul.wav]. Ella could feel the magic in the air, tingling against her skin, and the ghostly footsteps softly tread behind them [SFX: Ghostly_footsteps_softly_tread.wav].
+
+Bravely, Ella reached for the mysterious book on the dusty shelf, its pages rustling with a life of their own [SFX: Rustling_pages_of_a_bewitched_.wav]. The room seemed to hold its breath, the soft tapping of ghostly fingers on the window echoing in the silence [SFX: The_soft_tapping_of_ghostly_fi.wav].
+
+With a deep breath, Ella whispered an ancient incantation she'd read in a story [SFX: Whisper_of_an_ancient_incantat.wav]. The air shimmered, the whispers growing louder, yet more harmonious, as if the forest itself was singing along [SFX: Ethereal_whispers_of_spirits_i.wav].
+
+Suddenly, the room was filled with a warm, golden light, and the forest outside grew serene, the eerie sounds fading into the distance [SFX: Soothing_chimes_of_enchanted_w.wav]. Ella and Max exchanged a look of relief; they had broken the spell. 
+
+With newfound courage, they stepped back into the now peaceful woods, the distant wolf's howl now a friendly farewell [SFX: A_distant_wolf_howling_under_t.wav]. As they made their way home, the soft rustling of leaves sang them a lullaby of adventure and bravery [SFX: Leaves_rustling_gently_in_the_.wav]."""
+
+    book = re.sub(r'\[.*?\]', '', book)
     line_offset = 0
-    chunk_duration = 30  # Duration for each chunk in seconds
-    audio_window = 30  # Window for audio processing in seconds
-    audio_file = "example.wav"  # Path to the audio file to process
+    chunk_duration = 10  # Duration for each chunk in seconds
+    audio_window = 10  # Window for audio processing in seconds
+    audio_file = "data/datasets/Stories/Scary_Horror/story_1_alloy.wav"  # Path to the audio file to process
     target_sample_rate = 16000  # Target sample rate for processing
 
     # Load audio from file
@@ -327,7 +347,7 @@ if __name__ == "__main__":
     transcriber.process_audio_file(audio_data)
     end_time = time.time()
 
-    transcriber.print_and_save_df(audio_file.replace(".wav", ".csv"))
+    transcriber.print_df(audio_file.replace(".wav", ".csv"))
     print(transcriber.get_transcript())
     print(f"Time to process audio: {end_time - start_time} seconds")
 
