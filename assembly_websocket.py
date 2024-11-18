@@ -10,7 +10,7 @@ import websockets
 import struct
 import os
 from whisper_realtime import RealTimeTranscriber
-from assembly_db import SoundAssigner, OPENAI_API_KEY
+from data.assembly_db import SoundAssigner, OPENAI_API_KEY
 from openai import OpenAI
 import soundfile as sf
 
@@ -57,8 +57,10 @@ class AudioServer:
         self.music_sent_event = asyncio.Event()  # Track whether a MUSIC track has been sent
         self.audio_lock = asyncio.Lock()  # Lock to prevent simultaneous audio sends
         aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094"
-        self.assigner_SFX = SoundAssigner(chroma_path="SFX_db")
-        self.assigner_Music = SoundAssigner(chroma_path="SA_db")
+        self.assigner_SFX = SoundAssigner(chroma_name="SFX_db", data_root="./data/datasets")
+        self.assigner_Music = SoundAssigner(chroma_name="SA_db", data_root="./data/datasets")
+        self.sfx_score_threshold = 1.0
+        self.music_score_threshold = 1.2
         self.transcript = ""
         self.story = ""
         self.client = OpenAI()
@@ -172,24 +174,31 @@ class AudioServer:
     async def send_music_from_transcript(self, transcript, websocket):
         try:
             filename, category, score = self.assigner_Music.retrieve_src_file(transcript)
-            if filename:
-                print(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
-                audio_bytes = self.get_audio_bytes(os.path.join(filename))
-                await self.send_audio_with_header(websocket, audio_bytes, "MUSIC")
+            if score < self.music_score_threshold:
+                if filename:
+                    print(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
+                    audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                    await self.send_audio_with_header(websocket, audio_bytes, "MUSIC")
+                else:
+                    print("No MUSIC found for the given text.")
             else:
-                print("No MUSIC found for the given text.")
+                print(f"Not sending audio for category '{category}' to client with score: {score}.")
+                self.music_sent_event.clear()
         except Exception as e:
             print(f"Error: {e}")
 
     async def send_sfx_from_transcript(self, transcript, websocket):
         try:
             filename, category, score = self.assigner_SFX.retrieve_src_file(transcript)
-            if filename:
-                print(f"Sending SFX for category '{category}' to client with score: {score}.")
-                audio_bytes = self.get_audio_bytes(os.path.join(filename))
-                await self.send_audio_with_header(websocket, audio_bytes, "SFX")
+            if score < self.sfx_score_threshold:
+                if filename:
+                    print(f"Sending SFX for category '{category}' to client with score: {score}.")
+                    audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                    await self.send_audio_with_header(websocket, audio_bytes, "SFX")
+                else:
+                    print("No SFX found for the given text.")
             else:
-                print("No SFX found for the given text.")
+                print(f"Not sending audio for category '{category}' to client with score: {score}.")
         except Exception as e:
             print(f"Error: {e}")
 
@@ -256,7 +265,7 @@ class AudioServer:
             on_open=lambda session: print("Session ID:", session.session_id),
             on_close=self.on_close,
             word_boost=self.all_sounds,
-            end_utterance_silence_threshold=1500
+            end_utterance_silence_threshold=500
         )
 
         try:
@@ -271,7 +280,16 @@ class AudioServer:
     async def txt_reciever(self, websocket, path):
         async for message in websocket:
             print(f"Received message: {message}")
-            await self.send_audio_from_transcript(message, websocket)
+            # if len(self.transcript) < 20: # TODO fix this
+            #     self.transcript += transcript.text
+            #     return
+            if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
+                self.music_sent_event.set()
+                await self.send_music_from_transcript(message, websocket)
+                # await self.send_audio_from_transcript(transcript.text, websocket)
+            else:
+                await self.send_sfx_from_transcript(message, websocket)
+                # await self.send_audio_from_transcript(transcript.text, websocket)
 
     @staticmethod
     async def connection_handler(websocket, path):
