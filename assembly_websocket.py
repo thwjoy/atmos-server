@@ -10,9 +10,10 @@ import websockets
 import struct
 import os
 from whisper_realtime import RealTimeTranscriber
-from data.assembly_db import SoundAssigner, OPENAI_API_KEY
+from data.assembly_db import SoundAssigner
 from openai import OpenAI
 import soundfile as sf
+from keys import OPENAI_API_KEY
 
 import librosa
 import numpy as np
