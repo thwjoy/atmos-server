@@ -2,6 +2,7 @@ import ast
 import base64
 import io
 import re
+import time
 from typing import Optional
 import assemblyai as aai
 import pydub
@@ -159,9 +160,14 @@ class AudioServer:
         return audio.content, sentence, sounds
 
 
-    async def send_audio_in_chunks(self, websocket, audio_bytes, chunk_size=1024 * 1000):
+    async def send_audio_in_chunks(self, websocket, audio_bytes, header, chunk_size=1024 * 1000):
         async with self.audio_lock:  # Ensure only one audio is sent at a time
-            for i in range(0, len(audio_bytes), chunk_size):
+            # Send the first chunk: header + initial audio chunk
+            first_chunk = header + audio_bytes[:chunk_size]
+            await websocket.send(first_chunk)
+
+            # Send the remaining audio bytes in chunks
+            for i in range(chunk_size, len(audio_bytes), chunk_size):
                 chunk = audio_bytes[i:i + chunk_size]
                 await websocket.send(chunk)
 
@@ -169,8 +175,9 @@ class AudioServer:
         # Pack the indicator and audio size into a structured header
         indicator = indicator[:5].ljust(5)
         header = struct.pack(self.HEADER_FORMAT, indicator.encode(), len(audio_bytes), sample_rate)
-        message = header + audio_bytes  # Combine header and audio bytes
-        await self.send_audio_in_chunks(websocket, message)
+
+        # Send the audio in chunks, starting with the header
+        await self.send_audio_in_chunks(websocket, audio_bytes, header)
 
     async def send_music_from_transcript(self, transcript, websocket):
         try:
@@ -277,6 +284,7 @@ class AudioServer:
             print(f"Client disconnected: {e}")
         finally:
             transcriber.close()
+            print("Cleaned up resources after client disconnection")
 
     async def txt_reciever(self, websocket, path):
         async for message in websocket:
