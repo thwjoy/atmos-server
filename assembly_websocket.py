@@ -2,7 +2,6 @@ import ast
 import base64
 import io
 import re
-import time
 from typing import Optional
 import assemblyai as aai
 import pydub
@@ -280,11 +279,20 @@ class AudioServer:
             transcriber.connect()
             async for message in websocket:
                 transcriber.stream([message])
-        except websockets.ConnectionClosed as e:
-            print(f"Client disconnected: {e}")
+        except websockets.ConnectionClosedError as e:
+            print(f"Client disconnected abruptly: {e}")
+        except websockets.ConnectionClosedOK:
+            print("Client disconnected gracefully.")
         finally:
             transcriber.close()
             print("Cleaned up resources after client disconnection")
+
+            # Send a proper close frame to the client
+            try:
+                await websocket.close()
+                print("WebSocket closed with close frame.")
+            except Exception as e:
+                print(f"Error sending close frame: {e}")
 
     async def txt_reciever(self, websocket, path):
         async for message in websocket:
