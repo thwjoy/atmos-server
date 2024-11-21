@@ -262,20 +262,27 @@ class AudioServer:
                 asyncio.create_task(self.send_sfx_from_transcript(transcript.text, websocket))
                 # await self.send_audio_from_transcript(transcript.text, websocket)
 
+    async def send_message_async(self, message, websocket):
+        await asyncio.create_task(websocket.send(message))
+        print(f"Message sent: {message}")
 
     def on_data(self, transcript, websocket, loop):
         asyncio.run_coroutine_threadsafe(self.process_transcript_async(transcript, websocket), loop)
 
+    def on_open(self, session, websocket, loop):
+        print("Session ID:", session.session_id)
+        asyncio.run_coroutine_threadsafe(self.send_message_async(str(session.session_id), websocket), loop)
+        
     async def audio_receiver(self, websocket, path):
         print("Client connected")
         loop = asyncio.get_running_loop()
         
         transcriber = aai.RealtimeTranscriber(
             on_data=lambda transcript: self.on_data(transcript, websocket, loop),
-            on_error=self.on_error,
+            on_error=lambda error : self.on_error(error, websocket),
             sample_rate=44_100,
-            on_open=lambda session: print("Session ID:", session.session_id),
-            on_close=self.on_close,
+            on_open=lambda session: self.on_open(session, websocket, loop),
+            on_close=lambda : self.on_close(websocket), # why is this self?
             word_boost=self.all_sounds,
             end_utterance_silence_threshold=500
         )
@@ -325,13 +332,14 @@ class AudioServer:
             await asyncio.Future()  # Run forever
 
     @staticmethod
-    def on_error(error: aai.RealtimeError):
+    def on_error(error: aai.RealtimeError, websocket):
         print("An error occurred:", error)
+        asyncio.create_task(websocket.send('-1 ' + str(error)))
 
     @staticmethod
-    def on_close():
+    def on_close(websocket):
         print("Closing Session")
-
+        asyncio.create_task(websocket.close())
 
 # Server entry point
 def run():
