@@ -1,5 +1,4 @@
 import ast
-import base64
 import io
 import re
 from typing import Optional
@@ -82,7 +81,11 @@ class AudioServer:
         pydub.AudioSegment.from_file(audio_path).export("temp.wav", format="wav")
         with open("temp.wav", "rb") as audio_file:
             return audio_file.read()
-            
+        
+    async def get_audio_bytes_async(self, audio_path):
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.get_audio_bytes, audio_path)
+                       
     def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
         self.transcript += transcript
@@ -160,15 +163,13 @@ class AudioServer:
 
 
     async def send_audio_in_chunks(self, websocket, audio_bytes, header, chunk_size=1024 * 1000):
-        async with self.audio_lock:  # Ensure only one audio is sent at a time
-            # Send the first chunk: header + initial audio chunk
-            first_chunk = header + audio_bytes[:chunk_size]
-            await websocket.send(first_chunk)
-
-            # Send the remaining audio bytes in chunks
-            for i in range(chunk_size, len(audio_bytes), chunk_size):
-                chunk = audio_bytes[i:i + chunk_size]
-                await websocket.send(chunk)
+        # Send the first chunk: header + initial audio chunk
+        first_chunk = header + audio_bytes[:chunk_size]
+        await websocket.send(first_chunk)
+        # Send the remaining audio bytes in chunks
+        for i in range(chunk_size, len(audio_bytes), chunk_size):
+            chunk = audio_bytes[i:i + chunk_size]
+            await websocket.send(chunk)
 
     async def send_audio_with_header(self, websocket, audio_bytes, indicator, sample_rate=SAMPLE_RATE):
         # Pack the indicator and audio size into a structured header
@@ -184,8 +185,10 @@ class AudioServer:
             if score < self.music_score_threshold:
                 if filename:
                     print(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
-                    audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                    audio_bytes = await self.get_audio_bytes_async(os.path.join(filename))
+                    print("Read MUSIC")
                     await self.send_audio_with_header(websocket, audio_bytes, "MUSIC")
+                    print("Sent MUSIC track.")
                 else:
                     print("No MUSIC found for the given text.")
             else:
@@ -200,8 +203,10 @@ class AudioServer:
             if score < self.sfx_score_threshold:
                 if filename:
                     print(f"Sending SFX for category '{category}' to client with score: {score}.")
-                    audio_bytes = self.get_audio_bytes(os.path.join(filename))
+                    audio_bytes = await self.get_audio_bytes_async(os.path.join(filename))
+                    print("Read SFX")
                     await self.send_audio_with_header(websocket, audio_bytes, "SFX")
+                    print("Sent SFX.")
                 else:
                     print("No SFX found for the given text.")
             else:
@@ -251,10 +256,10 @@ class AudioServer:
             #     return
             if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
                 self.music_sent_event.set()
-                await self.send_music_from_transcript(transcript.text, websocket)
+                asyncio.create_task(self.send_music_from_transcript(transcript.text, websocket))
                 # await self.send_audio_from_transcript(transcript.text, websocket)
             else:
-                await self.send_sfx_from_transcript(transcript.text, websocket)
+                asyncio.create_task(self.send_sfx_from_transcript(transcript.text, websocket))
                 # await self.send_audio_from_transcript(transcript.text, websocket)
 
 
@@ -286,7 +291,6 @@ class AudioServer:
         finally:
             transcriber.close()
             print("Cleaned up resources after client disconnection")
-
             # Send a proper close frame to the client
             try:
                 await websocket.close()
@@ -294,19 +298,19 @@ class AudioServer:
             except Exception as e:
                 print(f"Error sending close frame: {e}")
 
-    async def txt_reciever(self, websocket, path):
-        async for message in websocket:
-            print(f"Received message: {message}")
-            # if len(self.transcript) < 20: # TODO fix this
-            #     self.transcript += transcript.text
-            #     return
-            if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-                self.music_sent_event.set()
-                await self.send_music_from_transcript(message, websocket)
-                # await self.send_audio_from_transcript(transcript.text, websocket)
-            else:
-                await self.send_sfx_from_transcript(message, websocket)
-                # await self.send_audio_from_transcript(transcript.text, websocket)
+    # async def txt_reciever(self, websocket, path):
+    #     async for message in websocket:
+    #         print(f"Received message: {message}")
+    #         # if len(self.transcript) < 20: # TODO fix this
+    #         #     self.transcript += transcript.text
+    #         #     return
+    #         if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
+    #             self.music_sent_event.set()
+    #             await self.send_music_from_transcript(message, websocket)
+    #             # await self.send_audio_from_transcript(transcript.text, websocket)
+    #         else:
+    #             await self.send_sfx_from_transcript(message, websocket)
+    #             # await self.send_audio_from_transcript(transcript.text, websocket)
 
     @staticmethod
     async def connection_handler(websocket, path):
