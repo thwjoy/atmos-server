@@ -2,7 +2,6 @@ import argparse
 import re
 import pandas as pd
 import os
-from langchain.embeddings.openai import OpenAIEmbeddings
 from openai import OpenAI
 import chromadb
 

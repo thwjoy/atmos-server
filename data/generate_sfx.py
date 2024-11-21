@@ -11,9 +11,8 @@ from elevenlabs import ElevenLabs
 # add constants to path
 import sys
 sys.path.append('..')
-from keys import OPENAI_API_KEY
-from keys import ELEVENLABS_API_KEY
-
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 

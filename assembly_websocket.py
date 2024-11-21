@@ -1,7 +1,5 @@
-import ast
+
 import io
-import re
-from typing import Optional
 import assemblyai as aai
 import pydub
 import asyncio
@@ -9,17 +7,15 @@ import websockets
 import struct
 import os
 import jwt
-import librosa
-import numpy as np
 from contextvars import ContextVar
 import logging
 
-from whisper_realtime import RealTimeTranscriber
 from data.assembly_db import SoundAssigner
-from openai import OpenAI
-import soundfile as sf
-from keys import OPENAI_API_KEY, SECRET_KEY
 
+from dotenv import load_dotenv
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+SECRET_KEY = os.getenv("SECRET_KEY")
 
 # Create ContextVars for user_id and session_id
 user_id_context: ContextVar[str] = ContextVar("user_id", default="None")
@@ -476,10 +472,10 @@ class AudioServer:
         asyncio.run_coroutine_threadsafe(self.process_transcript_async(transcript, websocket), loop)
 
     def on_open(self, session, websocket, loop):
+        set_user_id(self.user_id)
         logger.info(f"Transcriber session ID: {session.session_id}")
         self.session_id = session.session_id
         set_session_id(session.session_id)
-        set_user_id(self.user_id)
         asyncio.run_coroutine_threadsafe(self.send_message_async(str(session.session_id), websocket), loop)
     
     def on_error(self, error: aai.RealtimeError, websocket):
@@ -502,17 +498,17 @@ class AudioServer:
             on_close=lambda : self.on_close(websocket), # why is this self?
             end_utterance_silence_threshold=500
         ) as transcriber:
-            # try:
-            #     self.fire_and_forget(self.send_music_from_transcript("jungle", websocket))
-            # except Exception as e:
-            #     logger.error(f"Error sending files: {e}")
+            try:
+                self.fire_and_forget(self.send_music_from_transcript("jungle", websocket))
+            except Exception as e:
+                logger.error(f"Error sending files: {e}")
 
-            # await asyncio.sleep(5)
+            await asyncio.sleep(5)
 
-            # try:
-            #     self.fire_and_forget(self.send_sfx_from_transcript("horse", websocket))
-            # except Exception as e:
-            #     logger.error(f"Error sending files: {e}")
+            try:
+                self.fire_and_forget(self.send_sfx_from_transcript("horse", websocket))
+            except Exception as e:
+                logger.error(f"Error sending files: {e}")
             set_session_id(self.session_id)
             async for message in websocket:
                 transcriber.stream([message])
