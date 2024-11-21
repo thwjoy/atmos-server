@@ -1,7 +1,5 @@
-import ast
+
 import io
-import re
-from typing import Optional
 import assemblyai as aai
 import pydub
 import asyncio
@@ -9,17 +7,11 @@ import websockets
 import struct
 import os
 import jwt
-import librosa
-import numpy as np
 from contextvars import ContextVar
 import logging
 
-from whisper_realtime import RealTimeTranscriber
 from data.assembly_db import SoundAssigner
-from openai import OpenAI
-import soundfile as sf
 from keys import OPENAI_API_KEY, SECRET_KEY
-
 
 # Create ContextVars for user_id and session_id
 user_id_context: ContextVar[str] = ContextVar("user_id", default="None")
@@ -476,10 +468,10 @@ class AudioServer:
         asyncio.run_coroutine_threadsafe(self.process_transcript_async(transcript, websocket), loop)
 
     def on_open(self, session, websocket, loop):
+        set_user_id(self.user_id)
         logger.info(f"Transcriber session ID: {session.session_id}")
         self.session_id = session.session_id
         set_session_id(session.session_id)
-        set_user_id(self.user_id)
         asyncio.run_coroutine_threadsafe(self.send_message_async(str(session.session_id), websocket), loop)
     
     def on_error(self, error: aai.RealtimeError, websocket):
