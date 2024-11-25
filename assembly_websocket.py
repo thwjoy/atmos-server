@@ -498,17 +498,17 @@ class AudioServer:
             on_close=lambda : self.on_close(websocket), # why is this self?
             end_utterance_silence_threshold=500
         ) as transcriber:
-            try:
-                self.fire_and_forget(self.send_music_from_transcript("jungle", websocket))
-            except Exception as e:
-                logger.error(f"Error sending files: {e}")
+            # try:
+            #     self.fire_and_forget(self.send_music_from_transcript("jungle", websocket))
+            # except Exception as e:
+            #     logger.error(f"Error sending files: {e}")
 
-            await asyncio.sleep(5)
+            # await asyncio.sleep(5)
 
-            try:
-                self.fire_and_forget(self.send_sfx_from_transcript("horse", websocket))
-            except Exception as e:
-                logger.error(f"Error sending files: {e}")
+            # try:
+            #     self.fire_and_forget(self.send_sfx_from_transcript("horse", websocket))
+            # except Exception as e:
+            #     logger.error(f"Error sending files: {e}")
             set_session_id(self.session_id)
             async for message in websocket:
                 transcriber.stream([message])
