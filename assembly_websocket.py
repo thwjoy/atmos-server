@@ -9,6 +9,7 @@ import os
 import jwt
 from contextvars import ContextVar
 import logging
+import ssl
 
 from data.assembly_db import SoundAssigner
 
@@ -16,6 +17,13 @@ from dotenv import load_dotenv
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
+
+certfile = "/root/.ssh/myatmos_pro_chain.crt"
+keyfile = "/root/.ssh/myatmos.key"
+
+ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+
 
 # Create ContextVars for user_id and session_id
 user_id_context: ContextVar[str] = ContextVar("user_id", default="None")
@@ -287,7 +295,7 @@ class AudioServer:
         aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094"
         self.assigner_SFX = shared_resources.assigner_SFX
         self.assigner_Music = shared_resources.assigner_Music
-        self.sfx_score_threshold = 1.0
+        self.sfx_score_threshold = 1.2
         self.music_score_threshold = 1.2
         # self.transcript = ""
         # self.story = ""
@@ -486,7 +494,7 @@ class AudioServer:
         if not websocket.closed:
             self.fire_and_forget(websocket.close())
 
-    async def audio_receiver(self, websocket, path):
+    async def audio_receiver(self, websocket):
         logger.info("Client connected")
         loop = asyncio.get_running_loop()
         
@@ -530,7 +538,7 @@ class AudioServer:
     #             # await self.send_audio_from_transcript(transcript.text, websocket)
 
     @staticmethod
-    async def connection_handler(websocket, path):
+    async def connection_handler(websocket):
         # Get the client IP address
         client_ip = websocket.remote_address[0]
 
@@ -541,10 +549,14 @@ class AudioServer:
             return
     
         # Extract the token from the headers
-        token = websocket.request_headers.get("Authorization", "").replace("Bearer ", "")
-        if not token:
-            await websocket.close(code=4001, reason="Unauthorized: Missing token")
-            logger.warning("Connection rejected: Missing token")
+        try:
+            token = websocket.request_headers.get("Authorization", "").replace("Bearer ", "")
+            if not token:
+                await websocket.close(code=4001, reason="Unauthorized: Missing token")
+                logger.warning("Connection rejected: Missing token")
+                return
+        except Exception as e:
+            logger.error(f"Exception {e}")
             return
         
         # Verify the token
@@ -560,7 +572,7 @@ class AudioServer:
         # Handle communication after successful authentication
         try:
             server_instance = AudioServer(user_id)  # Create a new instance for each connection
-            await server_instance.audio_receiver(websocket, path)
+            await server_instance.audio_receiver(websocket)
         except websockets.ConnectionClosed as e:
             logger.error(f"Connection closed: {e}")
         except websockets.ConnectionClosedError as e:
@@ -576,8 +588,8 @@ class AudioServer:
 
     @staticmethod
     async def start_server(host="0.0.0.0", port=8765):
-        logger.info(f"Starting WebSocket server on ws://{host}:{port}")
-        async with websockets.serve(AudioServer.connection_handler, host, port, ping_interval=300, ping_timeout=300):
+        logger.info(f"Starting WebSocket server on wss://{host}:{port}")
+        async with websockets.serve(AudioServer.connection_handler, host, port, ping_interval=300, ping_timeout=300, ssl=ssl_context):
             await asyncio.Future()  # Run forever
 
 # Server entry point
