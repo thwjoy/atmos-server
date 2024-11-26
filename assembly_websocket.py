@@ -487,8 +487,9 @@ class AudioServer:
         asyncio.run_coroutine_threadsafe(self.send_message_async(str(session.session_id), websocket), loop)
     
     def on_error(self, error: aai.RealtimeError, websocket):
-        logger.info("An error occurred in transcriber:", error)
-        self.fire_and_forget(websocket.close())
+        logger.info(f"An error occurred in transcriber: {error}")
+        if not websocket.closed:
+            self.fire_and_forget(websocket.close())
 
     def on_close(self, websocket):
         if not websocket.closed:
