@@ -10,6 +10,9 @@ import jwt
 from contextvars import ContextVar
 import logging
 import ssl
+import threading
+import sqlite3
+import json
 
 from data.assembly_db import SoundAssigner
 
@@ -274,6 +277,41 @@ class TranscriberWrapper:
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.close()
 
+
+class DatabaseManager:
+    def __init__(self, db_path="database.db"):
+        self.db_path = db_path
+        self.local = threading.local()  # Thread-local storage
+
+    def connect(self):
+        """Get a thread-local connection."""
+        if not hasattr(self.local, "connection"):
+            self.local.connection = sqlite3.connect(self.db_path)
+        return self.local.connection
+
+    def initialize(self):
+        """Create tables if they don't exist."""
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS transcripts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    connection_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                )
+            ''')
+            conn.commit()
+
+    def insert_connection_data(self, connection_id, data):
+        """Insert data for a specific connection."""
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO transcripts (connection_id, data) VALUES (?, ?)",
+                (str(connection_id), json.dumps(data))
+            )
+            conn.commit()
+
 class SharedResources:
     def __init__(self):
         self.assigner_SFX = SoundAssigner(chroma_name="SFX_db", data_root="./data/datasets")
@@ -297,7 +335,11 @@ class AudioServer:
         self.assigner_Music = shared_resources.assigner_Music
         self.sfx_score_threshold = 1.2
         self.music_score_threshold = 1.2
-        # self.transcript = ""
+        self.transcript = {
+            "transcript": [],
+            "sounds": [],
+            "score": []
+        }
         # self.story = ""
         # self.client = OpenAI()
 
@@ -418,6 +460,12 @@ class AudioServer:
     #         # match the sound to the word
     #         filename, category, score = self.assigner_SFX.retrieve_src_file(row['word'])
     #     return audio
+
+    def insert_transcript_section(self, transcript, sounds, score):
+        self.transcript["transcript"].append(transcript),
+        self.transcript["sounds"].append(sounds),
+        self.transcript["score"].append(score)
+
     
     async def send_music_from_transcript(self, transcript, websocket):
         try:
@@ -425,6 +473,7 @@ class AudioServer:
             if score < self.music_score_threshold:
                 if filename:
                     logger.info(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
+                    self.insert_transcript_section(transcript, filename, score)
                     await send_audio_with_header(websocket, os.path.join(filename), "MUSIC")
                 else:
                     logger.info("No MUSIC found for the given text.")
@@ -444,6 +493,7 @@ class AudioServer:
             if score < self.sfx_score_threshold:
                 if filename:
                     logger.info(f"Sending SFX for category '{category}' to client with score: {score}.")
+                    self.insert_transcript_section(transcript, filename, score)
                     await send_audio_with_header(websocket, os.path.join(filename), "SFX")
                 else:
                     logger.info("No SFX found for the given text.")
@@ -492,6 +542,10 @@ class AudioServer:
             self.fire_and_forget(websocket.close())
 
     def on_close(self, websocket):
+        try:
+            db_manager.insert_connection_data(self.session_id, self.transcript)
+        except Exception as e:
+            logger.error(f"Failed to save transcript to db: {str(e)}")
         if not websocket.closed:
             self.fire_and_forget(websocket.close())
 
@@ -601,4 +655,7 @@ def run():
 # Run the server if the script is executed directly
 if __name__ == "__main__":
     logger = configure_logging()
+    # Create a global instance of DatabaseManager
+    db_manager = DatabaseManager()
+    db_manager.initialize()  # Ensure tables are created
     run()
