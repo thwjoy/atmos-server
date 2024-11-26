@@ -13,6 +13,8 @@ import ssl
 import threading
 import sqlite3
 import json
+from datetime import datetime
+
 
 from data.assembly_db import SoundAssigner
 
@@ -301,14 +303,46 @@ class DatabaseManager:
                 )
             ''')
             conn.commit()
+            # Create sessions table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    stop_time TEXT
+                )
+            ''')
+            conn.commit()
 
-    def insert_connection_data(self, connection_id, data):
+    def insert_transcript_data(self, connection_id, data):
         """Insert data for a specific connection."""
         with self.connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 "INSERT INTO transcripts (connection_id, data) VALUES (?, ?)",
                 (str(connection_id), json.dumps(data))
+            )
+            conn.commit()
+
+    def log_session_start(self, user_id):
+        """Log the start of a session."""
+        start_time = datetime.utcnow().isoformat()  # Use ISO 8601 format
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO sessions (user_id, start_time) VALUES (?, ?)",
+                (user_id, start_time)
+            )
+            conn.commit()
+
+    def log_session_stop(self, session_id):
+        """Log the stop of a session."""
+        stop_time = datetime.utcnow().isoformat()
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sessions SET stop_time = ? WHERE id = ?",
+                (stop_time, session_id)
             )
             conn.commit()
 
@@ -543,7 +577,7 @@ class AudioServer:
 
     def on_close(self, websocket):
         try:
-            db_manager.insert_connection_data(self.session_id, self.transcript)
+            db_manager.insert_transcript_data(self.session_id, self.transcript)
         except Exception as e:
             logger.error(f"Failed to save transcript to db: {str(e)}")
         if not websocket.closed:
@@ -619,6 +653,7 @@ class AudioServer:
         try:
             user_id = await validate_token(token)
             logger.info(f"Connection accepted for user {user_id}")
+            db_manager.log_session_start(user_id)
         except TokenValidationError as e:
             await websocket.close(code=4003, reason=str(e))
             logger.warning(f"Connection rejected: {str(e)}")
@@ -637,6 +672,7 @@ class AudioServer:
         except Exception as e:
             logger.error(f"Closing websocket: {e}")
         finally:
+            db_manager.log_session_stop(user_id)
             await server_instance.close_all_tasks()
             await websocket.close()
 
