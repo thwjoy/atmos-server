@@ -257,27 +257,27 @@ async def monitored_task(coro, name="Unnamed Task"):
     except Exception as e:
         logger.error(f"Error in task {name}: {e}")
 
-class TranscriberWrapper:
-    def __init__(self, **kwargs):
-        self.transcriber = aai.RealtimeTranscriber(**kwargs)
+# class TranscriberWrapper:
+#     def __init__(self, **kwargs):
+#         self.transcriber = aai.RealtimeTranscriber(**kwargs)
 
-    async def connect(self):
-        self.transcriber.connect()
-        logger.info("Transcriber connected")
-        return self
+#     async def connect(self):
+#         self.transcriber.connect()
+#         logger.info("Transcriber connected")
+#         return self
 
-    async def close(self):
-        self.transcriber.close()
-        logger.info("Transcriber closed")
+#     async def close(self):
+#         self.transcriber.close()
+#         logger.info("Transcriber closed")
 
-    def stream(self, data):
-        self.transcriber.stream(data)
+#     def stream(self, data):
+#         self.transcriber.stream(data)
 
-    async def __aenter__(self):
-        return await self.connect()
+#     async def __aenter__(self):
+#         return await self.connect()
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close()
+#     async def __aexit__(self, exc_type, exc_value, traceback):
+#         await self.close()
 
 
 class DatabaseManager:
@@ -334,6 +334,8 @@ class DatabaseManager:
                 (user_id, start_time)
             )
             conn.commit()
+            return cursor.lastrowid  # Return the session ID for reference
+
 
     def log_session_stop(self, session_id):
         """Log the stop of a session."""
@@ -571,30 +573,30 @@ class AudioServer:
         asyncio.run_coroutine_threadsafe(self.send_message_async(str(session.session_id), websocket), loop)
     
     def on_error(self, error: aai.RealtimeError, websocket):
-        logger.info(f"An error occurred in transcriber: {error}")
-        if not websocket.closed:
-            self.fire_and_forget(websocket.close())
+        logger.error(f"An error occurred in transcriber: {error}")
 
     def on_close(self, websocket):
         try:
             db_manager.insert_transcript_data(self.session_id, self.transcript)
         except Exception as e:
             logger.error(f"Failed to save transcript to db: {str(e)}")
-        if not websocket.closed:
-            self.fire_and_forget(websocket.close())
 
     async def audio_receiver(self, websocket):
         logger.info("Client connected")
         loop = asyncio.get_running_loop()
         
-        async with TranscriberWrapper(
-            on_data=lambda transcript: self.on_data(transcript, websocket, loop),
-            on_error=lambda error : self.on_error(error, websocket),
-            sample_rate=44_100,
-            on_open=lambda session: self.on_open(session, websocket, loop),
-            on_close=lambda : self.on_close(websocket), # why is this self?
-            end_utterance_silence_threshold=500
-        ) as transcriber:
+        try:
+            transcriber = aai.RealtimeTranscriber(
+                on_data=lambda transcript: self.on_data(transcript, websocket, loop),
+                on_error=lambda error : self.on_error(error, websocket),
+                sample_rate=44_100,
+                on_open=lambda session: self.on_open(session, websocket, loop),
+                on_close=lambda : self.on_close(websocket), # why is this self?
+                end_utterance_silence_threshold=500
+            )
+            # Start the connection
+            transcriber.connect()
+
             # try:
             #     self.fire_and_forget(self.send_music_from_transcript("jungle", websocket))
             # except Exception as e:
@@ -607,31 +609,25 @@ class AudioServer:
             # except Exception as e:
             #     logger.error(f"Error sending files: {e}")
             set_session_id(self.session_id)
-            async for message in websocket:
-                transcriber.stream([message])
-
-
-
-    # async def txt_reciever(self, websocket, path):
-    #     async for message in websocket:
-    #         logger.info(f"Received message: {message}")
-    #         # if len(self.transcript) < 20: # TODO fix this
-    #         #     self.transcript += transcript.text
-    #         #     return
-    #         if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-    #             self.music_sent_event.set()
-    #             await self.send_music_from_transcript(message, websocket)
-    #             # await self.send_audio_from_transcript(transcript.text, websocket)
-    #         else:
-    #             await self.send_sfx_from_transcript(message, websocket)
-    #             # await self.send_audio_from_transcript(transcript.text, websocket)
+            while True:
+                try:
+                    message = await websocket.recv()
+                    transcriber.stream([message])
+                except Exception as e:
+                    logger.error(f"Closing: {e}")
+                    break  # Exit the loop if an error occurs
+        finally:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(transcriber.close), timeout=5) # TODO this is probably a bug... 
+            except asyncio.TimeoutError:
+                logger.error("transcriber.close() timed out. Proceeding with cleanup.")
 
     @staticmethod
     async def connection_handler(websocket):
         # Get the client IP address
         client_ip = websocket.remote_address[0]
 
-        # Check rate limits
+        # # Check rate limits
         if is_rate_limited_ip(client_ip):
             await websocket.close(code=4290, reason="Rate limit exceeded")
             logger.warning(f"Connection rejected: Rate limit exceeded for IP {client_ip}")
@@ -653,7 +649,7 @@ class AudioServer:
         try:
             user_id = await validate_token(token)
             logger.info(f"Connection accepted for user {user_id}")
-            db_manager.log_session_start(user_id)
+            db_session = db_manager.log_session_start(user_id)
         except TokenValidationError as e:
             await websocket.close(code=4003, reason=str(e))
             logger.warning(f"Connection rejected: {str(e)}")
@@ -672,7 +668,7 @@ class AudioServer:
         except Exception as e:
             logger.error(f"Closing websocket: {e}")
         finally:
-            db_manager.log_session_stop(user_id)
+            db_manager.log_session_stop(db_session)
             await server_instance.close_all_tasks()
             await websocket.close()
 
