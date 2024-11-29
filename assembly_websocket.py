@@ -14,7 +14,7 @@ import threading
 import sqlite3
 import json
 from datetime import datetime
-
+import uuid
 
 from data.assembly_db import SoundAssigner
 
@@ -29,6 +29,7 @@ keyfile = "/root/.ssh/myatmos.key"
 ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
 
+HEADER_FORMAT = ">5sI16sIII"
 
 # Create ContextVars for user_id and session_id
 user_id_context: ContextVar[str] = ContextVar("user_id", default="None")
@@ -116,7 +117,7 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 #     resampled_audio = librosa.resample(audio, orig_sample_rate, target_sample_rate)
 #     return resampled_audio
 
-async def read_audio_in_chunks(audio_path, chunk_size=1024 * 1024):
+async def read_audio_in_chunks(audio_path, chunk_size):
         """Read an audio file in chunks asynchronously."""
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"File not found: {audio_path}")
@@ -132,66 +133,69 @@ async def send_with_backpressure(websocket, data, buffer_limit=10_000_000):
         await asyncio.sleep(0.1)  # Wait for the buffer to drain
     await websocket.send(data)
 
-async def send_audio_with_header(websocket, audio_path, indicator, chunk_size=1024 * 1024): # TODO fix this
-    """Send audio in chunks using an asyncio.Queue."""
+async def send_audio_with_header(websocket, audio_path, indicator, chunk_size=1024 * 512):
+    """Send audio in chunks with header containing packet size, packet count, sample rate, and unique sequence ID."""
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"File not found: {audio_path}")
+
     file_size = os.path.getsize(audio_path)
+    total_packets = (file_size + chunk_size - 1) // chunk_size  # Calculate total packet count
 
-    # Handle small files directly
-    if file_size <= chunk_size:
-        ind = indicator[:5].ljust(5)
-        header = struct.pack(AudioServer.HEADER_FORMAT, ind.encode(), file_size, SAMPLE_RATE)
-        try:
-            audio = pydub.AudioSegment.from_file(audio_path)
-            with io.BytesIO() as buffer:
-                audio.export(buffer, format="wav")  # Export the audio to a BytesIO buffer
-                buffer.seek(0)
-                await send_with_backpressure(websocket, header + buffer.read())
-                logger.info(f"Sent small file ({file_size} bytes) in a single chunk with header.")
-        except websockets.ConnectionClosed as e:
-            logger.error(f"WebSocket closed while sending small file: {e}")
-            raise
-        return
+    # Retrieve sample rate (assume WAV format)
+    sample_rate = 44100
 
-    # For larger files, use producer-consumer logic
+    # Generate a unique sequence ID for this transmission
+    sequence_id = uuid.uuid4().bytes  # UUID as a 32-byte binary string
+
     queue = asyncio.Queue()
 
     async def producer():
+        packet_count = 0
         async for chunk in read_audio_in_chunks(audio_path, chunk_size):
-            await queue.put(chunk)
+            await queue.put((packet_count, chunk))  # Add packet count with chunk
+            packet_count += 1
         await queue.put(None)  # Signal completion
 
     async def consumer():
-        # Add header to the first chunk
-        ind = indicator[:5].ljust(5)
-        header = struct.pack(AudioServer.HEADER_FORMAT, ind.encode(), file_size, SAMPLE_RATE)
-        first_chunk = await queue.get()
-        if first_chunk is not None:
-            try:
-                await send_with_backpressure(websocket, header + first_chunk)
-            except websockets.ConnectionClosed as e:
-                logger.error(f"WebSocket closed during send: {e}")
-                raise
+        packet_sent = 0
 
-        # Send remaining chunks
         while True:
             try:
-                chunk = await queue.get()
-                if chunk is None:  # Completion signal
+                data = await queue.get()
+                if data is None:  # Completion signal
                     break
-                await send_with_backpressure(websocket, chunk)
+
+                packet_count, chunk = data
+
+                # Build the header
+                ind = indicator[:5].ljust(5)  # Ensure the indicator is 5 bytes
+                header = struct.pack(
+                    HEADER_FORMAT,       # Updated format
+                    ind.encode(),        # Indicator
+                    file_size,          # Size of this packet
+                    sequence_id,         # Unique sequence ID
+                    packet_count,        # Packet count (sequence number)
+                    total_packets,       # Total packets
+                    sample_rate          # Sample rate
+                )
+
+                # Send the chunk with the header
+                await send_with_backpressure(websocket, header + chunk)
+                packet_sent += 1
+
             except websockets.ConnectionClosed as e:
                 logger.error(f"WebSocket closed during send: {e}")
                 raise
 
     try:
         await asyncio.gather(
-            asyncio.create_task(producer()), 
+            asyncio.create_task(producer()),
             asyncio.create_task(consumer())
         )
+        logger.info(f"Successfully sent packets with Sequence ID: {uuid.UUID(bytes=sequence_id)}.")
     except Exception as e:
         logger.error(f"Error in send_audio_with_header: {e}")
+
 
 class TokenValidationError(Exception):
     """Custom exception for token validation failures."""
@@ -356,7 +360,6 @@ class SharedResources:
 shared_resources = SharedResources()
 
 class AudioServer:
-    HEADER_FORMAT = '>5sII'  # 5-byte string (indicator) and 4-byte integer (audio size)
 
     def __init__(self, user_id='-1', host="0.0.0.0", port=8765):
         self.user_id = user_id
@@ -592,7 +595,7 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=500
+                end_utterance_silence_threshold=100
             )
             # Start the connection
             transcriber.connect()
