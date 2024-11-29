@@ -10,6 +10,11 @@ import jwt
 from contextvars import ContextVar
 import logging
 import ssl
+import threading
+import sqlite3
+import json
+from datetime import datetime
+import uuid
 
 from data.assembly_db import SoundAssigner
 
@@ -24,6 +29,7 @@ keyfile = "/root/.ssh/myatmos.key"
 ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
 
+HEADER_FORMAT = ">5sI16sIII"
 
 # Create ContextVars for user_id and session_id
 user_id_context: ContextVar[str] = ContextVar("user_id", default="None")
@@ -111,7 +117,7 @@ os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 #     resampled_audio = librosa.resample(audio, orig_sample_rate, target_sample_rate)
 #     return resampled_audio
 
-async def read_audio_in_chunks(audio_path, chunk_size=1024 * 1024):
+async def read_audio_in_chunks(audio_path, chunk_size):
         """Read an audio file in chunks asynchronously."""
         if not os.path.exists(audio_path):
             raise FileNotFoundError(f"File not found: {audio_path}")
@@ -127,66 +133,69 @@ async def send_with_backpressure(websocket, data, buffer_limit=10_000_000):
         await asyncio.sleep(0.1)  # Wait for the buffer to drain
     await websocket.send(data)
 
-async def send_audio_with_header(websocket, audio_path, indicator, chunk_size=1024 * 1024): # TODO fix this
-    """Send audio in chunks using an asyncio.Queue."""
+async def send_audio_with_header(websocket, audio_path, indicator, chunk_size=1024 * 512):
+    """Send audio in chunks with header containing packet size, packet count, sample rate, and unique sequence ID."""
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"File not found: {audio_path}")
+
     file_size = os.path.getsize(audio_path)
+    total_packets = (file_size + chunk_size - 1) // chunk_size  # Calculate total packet count
 
-    # Handle small files directly
-    if file_size <= chunk_size:
-        ind = indicator[:5].ljust(5)
-        header = struct.pack(AudioServer.HEADER_FORMAT, ind.encode(), file_size, SAMPLE_RATE)
-        try:
-            audio = pydub.AudioSegment.from_file(audio_path)
-            with io.BytesIO() as buffer:
-                audio.export(buffer, format="wav")  # Export the audio to a BytesIO buffer
-                buffer.seek(0)
-                await send_with_backpressure(websocket, header + buffer.read())
-                logger.info(f"Sent small file ({file_size} bytes) in a single chunk with header.")
-        except websockets.ConnectionClosed as e:
-            logger.error(f"WebSocket closed while sending small file: {e}")
-            raise
-        return
+    # Retrieve sample rate (assume WAV format)
+    sample_rate = 44100
 
-    # For larger files, use producer-consumer logic
+    # Generate a unique sequence ID for this transmission
+    sequence_id = uuid.uuid4().bytes  # UUID as a 32-byte binary string
+
     queue = asyncio.Queue()
 
     async def producer():
+        packet_count = 0
         async for chunk in read_audio_in_chunks(audio_path, chunk_size):
-            await queue.put(chunk)
+            await queue.put((packet_count, chunk))  # Add packet count with chunk
+            packet_count += 1
         await queue.put(None)  # Signal completion
 
     async def consumer():
-        # Add header to the first chunk
-        ind = indicator[:5].ljust(5)
-        header = struct.pack(AudioServer.HEADER_FORMAT, ind.encode(), file_size, SAMPLE_RATE)
-        first_chunk = await queue.get()
-        if first_chunk is not None:
-            try:
-                await send_with_backpressure(websocket, header + first_chunk)
-            except websockets.ConnectionClosed as e:
-                logger.error(f"WebSocket closed during send: {e}")
-                raise
+        packet_sent = 0
 
-        # Send remaining chunks
         while True:
             try:
-                chunk = await queue.get()
-                if chunk is None:  # Completion signal
+                data = await queue.get()
+                if data is None:  # Completion signal
                     break
-                await send_with_backpressure(websocket, chunk)
+
+                packet_count, chunk = data
+
+                # Build the header
+                ind = indicator[:5].ljust(5)  # Ensure the indicator is 5 bytes
+                header = struct.pack(
+                    HEADER_FORMAT,       # Updated format
+                    ind.encode(),        # Indicator
+                    file_size,          # Size of this packet
+                    sequence_id,         # Unique sequence ID
+                    packet_count,        # Packet count (sequence number)
+                    total_packets,       # Total packets
+                    sample_rate          # Sample rate
+                )
+
+                # Send the chunk with the header
+                await send_with_backpressure(websocket, header + chunk)
+                packet_sent += 1
+
             except websockets.ConnectionClosed as e:
                 logger.error(f"WebSocket closed during send: {e}")
                 raise
 
     try:
         await asyncio.gather(
-            asyncio.create_task(producer()), 
+            asyncio.create_task(producer()),
             asyncio.create_task(consumer())
         )
+        logger.info(f"Successfully sent packets with Sequence ID: {uuid.UUID(bytes=sequence_id)}.")
     except Exception as e:
         logger.error(f"Error in send_audio_with_header: {e}")
+
 
 class TokenValidationError(Exception):
     """Custom exception for token validation failures."""
@@ -252,27 +261,96 @@ async def monitored_task(coro, name="Unnamed Task"):
     except Exception as e:
         logger.error(f"Error in task {name}: {e}")
 
-class TranscriberWrapper:
-    def __init__(self, **kwargs):
-        self.transcriber = aai.RealtimeTranscriber(**kwargs)
+# class TranscriberWrapper:
+#     def __init__(self, **kwargs):
+#         self.transcriber = aai.RealtimeTranscriber(**kwargs)
 
-    async def connect(self):
-        self.transcriber.connect()
-        logger.info("Transcriber connected")
-        return self
+#     async def connect(self):
+#         self.transcriber.connect()
+#         logger.info("Transcriber connected")
+#         return self
 
-    async def close(self):
-        self.transcriber.close()
-        logger.info("Transcriber closed")
+#     async def close(self):
+#         self.transcriber.close()
+#         logger.info("Transcriber closed")
 
-    def stream(self, data):
-        self.transcriber.stream(data)
+#     def stream(self, data):
+#         self.transcriber.stream(data)
 
-    async def __aenter__(self):
-        return await self.connect()
+#     async def __aenter__(self):
+#         return await self.connect()
 
-    async def __aexit__(self, exc_type, exc_value, traceback):
-        await self.close()
+#     async def __aexit__(self, exc_type, exc_value, traceback):
+#         await self.close()
+
+
+class DatabaseManager:
+    def __init__(self, db_path="database.db"):
+        self.db_path = db_path
+        self.local = threading.local()  # Thread-local storage
+
+    def connect(self):
+        """Get a thread-local connection."""
+        if not hasattr(self.local, "connection"):
+            self.local.connection = sqlite3.connect(self.db_path)
+        return self.local.connection
+
+    def initialize(self):
+        """Create tables if they don't exist."""
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS transcripts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    connection_id TEXT NOT NULL,
+                    data TEXT NOT NULL
+                )
+            ''')
+            conn.commit()
+            # Create sessions table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    start_time TEXT NOT NULL,
+                    stop_time TEXT
+                )
+            ''')
+            conn.commit()
+
+    def insert_transcript_data(self, connection_id, data):
+        """Insert data for a specific connection."""
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO transcripts (connection_id, data) VALUES (?, ?)",
+                (str(connection_id), json.dumps(data))
+            )
+            conn.commit()
+
+    def log_session_start(self, user_id):
+        """Log the start of a session."""
+        start_time = datetime.utcnow().isoformat()  # Use ISO 8601 format
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO sessions (user_id, start_time) VALUES (?, ?)",
+                (user_id, start_time)
+            )
+            conn.commit()
+            return cursor.lastrowid  # Return the session ID for reference
+
+
+    def log_session_stop(self, session_id):
+        """Log the stop of a session."""
+        stop_time = datetime.utcnow().isoformat()
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE sessions SET stop_time = ? WHERE id = ?",
+                (stop_time, session_id)
+            )
+            conn.commit()
 
 class SharedResources:
     def __init__(self):
@@ -282,7 +360,6 @@ class SharedResources:
 shared_resources = SharedResources()
 
 class AudioServer:
-    HEADER_FORMAT = '>5sII'  # 5-byte string (indicator) and 4-byte integer (audio size)
 
     def __init__(self, user_id='-1', host="0.0.0.0", port=8765):
         self.user_id = user_id
@@ -297,7 +374,11 @@ class AudioServer:
         self.assigner_Music = shared_resources.assigner_Music
         self.sfx_score_threshold = 1.2
         self.music_score_threshold = 1.2
-        # self.transcript = ""
+        self.transcript = {
+            "transcript": [],
+            "sounds": [],
+            "score": []
+        }
         # self.story = ""
         # self.client = OpenAI()
 
@@ -418,6 +499,12 @@ class AudioServer:
     #         # match the sound to the word
     #         filename, category, score = self.assigner_SFX.retrieve_src_file(row['word'])
     #     return audio
+
+    def insert_transcript_section(self, transcript, sounds, score):
+        self.transcript["transcript"].append(transcript),
+        self.transcript["sounds"].append(sounds),
+        self.transcript["score"].append(score)
+
     
     async def send_music_from_transcript(self, transcript, websocket):
         try:
@@ -425,6 +512,7 @@ class AudioServer:
             if score < self.music_score_threshold:
                 if filename:
                     logger.info(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
+                    self.insert_transcript_section(transcript, filename, score)
                     await send_audio_with_header(websocket, os.path.join(filename), "MUSIC")
                 else:
                     logger.info("No MUSIC found for the given text.")
@@ -444,6 +532,7 @@ class AudioServer:
             if score < self.sfx_score_threshold:
                 if filename:
                     logger.info(f"Sending SFX for category '{category}' to client with score: {score}.")
+                    self.insert_transcript_section(transcript, filename, score)
                     await send_audio_with_header(websocket, os.path.join(filename), "SFX")
                 else:
                     logger.info("No SFX found for the given text.")
@@ -487,25 +576,30 @@ class AudioServer:
         asyncio.run_coroutine_threadsafe(self.send_message_async(str(session.session_id), websocket), loop)
     
     def on_error(self, error: aai.RealtimeError, websocket):
-        logger.info("An error occurred in transcriber:", error)
-        self.fire_and_forget(websocket.close())
+        logger.error(f"An error occurred in transcriber: {error}")
 
     def on_close(self, websocket):
-        if not websocket.closed:
-            self.fire_and_forget(websocket.close())
+        try:
+            db_manager.insert_transcript_data(self.session_id, self.transcript)
+        except Exception as e:
+            logger.error(f"Failed to save transcript to db: {str(e)}")
 
     async def audio_receiver(self, websocket):
         logger.info("Client connected")
         loop = asyncio.get_running_loop()
         
-        async with TranscriberWrapper(
-            on_data=lambda transcript: self.on_data(transcript, websocket, loop),
-            on_error=lambda error : self.on_error(error, websocket),
-            sample_rate=44_100,
-            on_open=lambda session: self.on_open(session, websocket, loop),
-            on_close=lambda : self.on_close(websocket), # why is this self?
-            end_utterance_silence_threshold=500
-        ) as transcriber:
+        try:
+            transcriber = aai.RealtimeTranscriber(
+                on_data=lambda transcript: self.on_data(transcript, websocket, loop),
+                on_error=lambda error : self.on_error(error, websocket),
+                sample_rate=44_100,
+                on_open=lambda session: self.on_open(session, websocket, loop),
+                on_close=lambda : self.on_close(websocket), # why is this self?
+                end_utterance_silence_threshold=100
+            )
+            # Start the connection
+            transcriber.connect()
+
             # try:
             #     self.fire_and_forget(self.send_music_from_transcript("jungle", websocket))
             # except Exception as e:
@@ -518,31 +612,25 @@ class AudioServer:
             # except Exception as e:
             #     logger.error(f"Error sending files: {e}")
             set_session_id(self.session_id)
-            async for message in websocket:
-                transcriber.stream([message])
-
-
-
-    # async def txt_reciever(self, websocket, path):
-    #     async for message in websocket:
-    #         logger.info(f"Received message: {message}")
-    #         # if len(self.transcript) < 20: # TODO fix this
-    #         #     self.transcript += transcript.text
-    #         #     return
-    #         if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-    #             self.music_sent_event.set()
-    #             await self.send_music_from_transcript(message, websocket)
-    #             # await self.send_audio_from_transcript(transcript.text, websocket)
-    #         else:
-    #             await self.send_sfx_from_transcript(message, websocket)
-    #             # await self.send_audio_from_transcript(transcript.text, websocket)
+            while True:
+                try:
+                    message = await websocket.recv()
+                    transcriber.stream([message])
+                except Exception as e:
+                    logger.error(f"Closing: {e}")
+                    break  # Exit the loop if an error occurs
+        finally:
+            try:
+                await asyncio.wait_for(asyncio.to_thread(transcriber.close), timeout=5) # TODO this is probably a bug... 
+            except asyncio.TimeoutError:
+                logger.error("transcriber.close() timed out. Proceeding with cleanup.")
 
     @staticmethod
     async def connection_handler(websocket):
         # Get the client IP address
         client_ip = websocket.remote_address[0]
 
-        # Check rate limits
+        # # Check rate limits
         if is_rate_limited_ip(client_ip):
             await websocket.close(code=4290, reason="Rate limit exceeded")
             logger.warning(f"Connection rejected: Rate limit exceeded for IP {client_ip}")
@@ -564,6 +652,7 @@ class AudioServer:
         try:
             user_id = await validate_token(token)
             logger.info(f"Connection accepted for user {user_id}")
+            db_session = db_manager.log_session_start(user_id)
         except TokenValidationError as e:
             await websocket.close(code=4003, reason=str(e))
             logger.warning(f"Connection rejected: {str(e)}")
@@ -582,6 +671,7 @@ class AudioServer:
         except Exception as e:
             logger.error(f"Closing websocket: {e}")
         finally:
+            db_manager.log_session_stop(db_session)
             await server_instance.close_all_tasks()
             await websocket.close()
 
@@ -600,4 +690,7 @@ def run():
 # Run the server if the script is executed directly
 if __name__ == "__main__":
     logger = configure_logging()
+    # Create a global instance of DatabaseManager
+    db_manager = DatabaseManager()
+    db_manager.initialize()  # Ensure tables are created
     run()
