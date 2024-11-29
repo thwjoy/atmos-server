@@ -1,3 +1,4 @@
+import argparse
 import asyncio
 import sys
 import numpy as np
@@ -8,11 +9,13 @@ import io
 from concurrent.futures import ThreadPoolExecutor
 from pydub import AudioSegment
 import struct
+import uuid
 
 message_queue = asyncio.Queue()
 
 # WebSocket server URL
-SERVER_URI = "ws://localhost:8765"  # Replace <server_ip> with your server's IP
+SERVER_URI = "wss://myatmos.pro/ws"  # Replace <server_ip> with your server's IP
+TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJleHAiOjE3MzMwNjg5NzksImlhdCI6MTczMjIwNDk3OSwiaXNzIjoieW91ci1hcHAtbmFtZSJ9.irNjsFJSjdxWqfRZqHclf4Pb78-hNIYTr9PRuZJYtQ8"
 
 # Audio stream settings
 SAMPLE_RATE = 44100
@@ -21,6 +24,15 @@ FORMAT = pyaudio.paInt16  # 16-bit audio format
 CHANNELS = 1
 
 playing_narration = asyncio.Event()
+
+def is_uuid(message):
+    try:
+        # Attempt to create a UUID object from the message
+        uuid_obj = uuid.UUID(message)
+        return True
+    except (ValueError, TypeError):
+        # If parsing fails, it's not a valid UUID
+        return False
 
 def play_audio_sync(audio_bytes, sample_rate=SAMPLE_RATE, volume=1.0):
     """Plays the received audio data with adjustable volume."""
@@ -56,7 +68,7 @@ async def play_audio(audio_bytes, sample_rate):
     """Runs play_audio_sync in a background thread."""
     await asyncio.to_thread(play_audio_sync, audio_bytes, sample_rate)
 
-async def send_audio(websocket):
+async def send_recording(websocket):
     p = pyaudio.PyAudio()
     stream = p.open(format=FORMAT, channels=CHANNELS, rate=SAMPLE_RATE, input=True, frames_per_buffer=CHUNK_SIZE)
 
@@ -77,10 +89,58 @@ async def send_audio(websocket):
         stream.close()
         p.terminate()
 
+async def send_audio(websocket, wav_file_path):
+    # Open the WAV file
+    wav_file = wave.open(wav_file_path, 'rb')
+
+    # Get audio parameters
+    channels = wav_file.getnchannels()
+    sample_width = wav_file.getsampwidth()
+    frame_rate = wav_file.getframerate()
+    chunk_size = 1024  # Adjust the chunk size as needed
+
+    # Set up PyAudio for playback
+    p = pyaudio.PyAudio()
+    stream = p.open(format=p.get_format_from_width(sample_width),
+                    channels=channels,
+                    rate=frame_rate,
+                    output=True)
+
+    print("Streaming and playing audio... Press Ctrl+C to stop.")
+    try:
+        while True:
+            # Read a chunk of audio data from the WAV file
+            audio_chunk = wav_file.readframes(chunk_size)
+
+            # Stop when we reach the end of the file
+            if not audio_chunk:
+                print("Finished streaming and playing the WAV file.")
+                break
+
+            # Send the audio chunk to the server
+            await websocket.send(audio_chunk)
+
+            # Play the audio chunk
+            stream.write(audio_chunk)
+
+            # Simulate real-time streaming
+            await asyncio.sleep(chunk_size / frame_rate)
+    except KeyboardInterrupt:
+        print("Stopped streaming and playback.")
+    finally:
+        # Clean up
+        wav_file.close()
+        stream.stop_stream()
+        stream.close()
+        p.terminate()
+
 async def receive_audio(websocket):
     print("Listening for audio data...")
-    HEADER_FORMAT = '>5sII'  # Matches server's format: 5-byte indicator, 4-byte audio size
+    HEADER_FORMAT = ">5sI16sIII"  # Updated to match the sender's format
     HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+
+    # Dictionary to store accumulated audio data by sequence ID
+    accumulated_audio = {}
 
     while True:
         try:
@@ -92,26 +152,25 @@ async def receive_audio(websocket):
                 print("Received text message:", message)
             else:
                 # Unpack the header
-                indicator, audio_size, sample_rate = struct.unpack(HEADER_FORMAT, message[:HEADER_SIZE])
+                indicator, audio_size, sequence_id, packet_count, total_packets, sample_rate = struct.unpack(
+                    HEADER_FORMAT, message[:HEADER_SIZE]
+                )
                 indicator = indicator.decode().strip()  # Convert bytes to string and remove any padding
-                print(indicator, audio_size, sample_rate)
-                # Receive the audio data in chunks until complete
-                accumulated_audio = message[HEADER_SIZE:]
+                sequence_id = uuid.UUID(bytes=sequence_id)  # Convert binary UUID to string representation
 
-                # Keep receiving data until the accumulated data matches the expected audio size
-                while len(accumulated_audio) < audio_size:
-                    chunk = await websocket.recv()
-                    accumulated_audio += chunk
-                
-                if indicator == "STORY":
-                    playing_narration.set()
-                    play_audio_sync(accumulated_audio, sample_rate, volume=2.0)
-                    playing_narration.clear()
-                else:
-                    asyncio.create_task(play_audio(accumulated_audio, sample_rate=sample_rate))  # Play in the background
+                # Accumulate audio data for the specific sequence
+                if sequence_id not in accumulated_audio:
+                    accumulated_audio[sequence_id] = b""
+
+                accumulated_audio[sequence_id] += message[HEADER_SIZE:]
+
+                # Check if the sequence is complete
+                if len(accumulated_audio[sequence_id]) >= audio_size:
+                    print(f"Received complete sequence for {indicator} with ID {sequence_id}.")
+                    asyncio.create_task(play_audio(accumulated_audio.pop(sequence_id), sample_rate=sample_rate))
 
         except websockets.ConnectionClosed:
-            print("Server disconnected")
+            print("WebSocket connection closed.")
             break
 
 async def poll_input():
@@ -134,10 +193,28 @@ async def send_text(websocket):
         await asyncio.sleep(0.1)  # Small delay to allow message processing
 
 async def main():
-    async with websockets.connect(SERVER_URI) as websocket:
-        send_task = asyncio.create_task(send_audio(websocket))
-        receive_task = asyncio.create_task(receive_audio(websocket))
-        # input_task = asyncio.create_task(poll_input())
-        await asyncio.gather(send_task, receive_task)
+    parser = argparse.ArgumentParser(description="Stream and play a WAV file while sending it to a WebSocket server.")
+    parser.add_argument(
+        "--wav_file",
+        type=str,
+        help="Path to the WAV file to stream and play."
+    )
+    args = parser.parse_args()
+
+    headers = {
+        "Authorization": f"Bearer {TOKEN}"  # Common format for tokens
+    }
+    async with websockets.connect(SERVER_URI, extra_headers=headers) as websocket:
+        # recieve the first message
+        message = await websocket.recv()
+        print(message)
+        # check if message is a UUID type
+        if is_uuid(message):
+            print("Received UUID:", message)
+
+            send_task = asyncio.create_task(send_audio(websocket, args.wav_file))
+            receive_task = asyncio.create_task(receive_audio(websocket))
+            # input_task = asyncio.create_task(poll_input())
+            await asyncio.gather(receive_task)
 
 asyncio.run(main())
