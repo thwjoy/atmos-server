@@ -27,11 +27,12 @@ load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-certfile = "/root/.ssh/myatmos_pro_chain.crt"
-keyfile = "/root/.ssh/myatmos.key"
+# certfile = "/root/.ssh/myatmos_pro_chain.crt"
+# keyfile = "/root/.ssh/myatmos.key"
 
-ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+# ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+# ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+ssl_context = None
 
 HEADER_FORMAT = ">5sI16sIII"
 
@@ -200,6 +201,28 @@ async def send_audio_with_header(websocket, audio_path, indicator, chunk_size=10
     except Exception as e:
         logger.error(f"Error in send_audio_with_header: {e}")
 
+async def send_transcript_audio_with_header(websocket, audio, sample_rate, chunk_size=1024 * 512):
+    ind = "STORY"
+    file_size = len(audio)
+    sequence_id = uuid.uuid4().bytes  # UUID as a 32-byte binary string
+    packet_count = 0
+    total_packets = (file_size + chunk_size - 1) // chunk_size  # Calculate total packet count
+    # Divide the audio into chunks
+    for i in range(0, len(audio), chunk_size):
+        chunk = audio[i:i + chunk_size]
+        # Add a header with the chunk size
+        header = struct.pack(
+            HEADER_FORMAT,       # Updated format
+            ind.encode(),        # Indicator
+            file_size,          # Size of this packet
+            sequence_id,         # Unique sequence ID
+            packet_count,        # Packet count (sequence number)
+            total_packets,       # Total packets
+            sample_rate          # Sample rate
+        )
+        packet_count += 1
+        data_with_header = header + chunk
+        await send_with_backpressure(websocket, data_with_header)
 
 class TokenValidationError(Exception):
     """Custom exception for token validation failures."""
@@ -478,11 +501,13 @@ class AudioServer:
     
     async def send_audio_from_transcript(self, transcript, websocket):
         audio, transcript, sounds = self.get_next_story_section(transcript)
-        # convert the audio bytes into a wavfile and load as numpy
-        sample_rate, audio = load_wav_from_bytes(audio)
-        whisper_sample_rate = 16000
-        audio = resample_audio(audio, sample_rate, whisper_sample_rate)
-        duration = min(10, np.floor(len(audio) / whisper_sample_rate))
+        logger.info(f"Sending story snippet: {transcript}")
+        await send_transcript_audio_with_header(websocket, audio, 24000)
+
+
+        # whisper_sample_rate = 16000
+        # audio = resample_audio(audio, sample_rate, whisper_sample_rate)
+        # duration = min(10, np.floor(len(audio) / whisper_sample_rate))
         # try:
         #     transcriber = RealTimeTranscriber(
         #                 book=transcript,
@@ -494,9 +519,7 @@ class AudioServer:
         #     audio = self.add_sounds_to_audio(audio, sounds, transcriber.get_df(), whisper_sample_rate)
         # except Exception as e:
         #     logger.error(f"Error: {e}")
-        audio = audio_to_bytes(audio, whisper_sample_rate)
-        logger.info(f"Sending story snippet: {transcript}")
-        await self.send_audio_with_header(websocket, audio, "STORY", whisper_sample_rate)
+        # audio = audio_to_bytes(audio, whisper_sample_rate)
 
     # def add_sounds_to_audio(self, audio, sounds, timestamps, sample_rate):
     #     """ for each sound, find the timestamp in timestamps df and insert into audio array"""
@@ -683,7 +706,7 @@ class AudioServer:
 
 
     @staticmethod
-    async def start_server(host="0.0.0.0", port=8765):
+    async def start_server(host="localhost", port=5001):
         logger.info(f"Starting WebSocket server on wss://{host}:{port}")
         async with websockets.serve(AudioServer.connection_handler, host, port, ping_interval=300, ping_timeout=300, ssl=ssl_context):
             await asyncio.Future()  # Run forever

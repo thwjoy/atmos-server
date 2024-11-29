@@ -14,7 +14,7 @@ import uuid
 message_queue = asyncio.Queue()
 
 # WebSocket server URL
-SERVER_URI = "wss://myatmos.pro/ws"  # Replace <server_ip> with your server's IP
+SERVER_URI = "ws://localhost:5001"  # Replace <server_ip> with your server's IP
 TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJleHAiOjE3MzMwNjg5NzksImlhdCI6MTczMjIwNDk3OSwiaXNzIjoieW91ci1hcHAtbmFtZSJ9.irNjsFJSjdxWqfRZqHclf4Pb78-hNIYTr9PRuZJYtQ8"
 
 # Audio stream settings
