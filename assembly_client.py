@@ -64,9 +64,15 @@ def play_audio_sync(audio_bytes, sample_rate=SAMPLE_RATE, volume=1.0):
     audio.terminate()
     print("Audio playback complete.")
 
-async def play_audio(audio_bytes, sample_rate):
-    """Runs play_audio_sync in a background thread."""
-    await asyncio.to_thread(play_audio_sync, audio_bytes, sample_rate)
+async def play_audio(audio_bytes, sample_rate, indicator):
+    """Plays audio asynchronously and manages the `pause_recording` event based on indicator."""
+    if indicator == "STORY":
+        playing_narration.set()  # Pause recording only for STORY
+    try:
+        await asyncio.to_thread(play_audio_sync, audio_bytes, sample_rate)
+    finally:
+        if indicator == "STORY":
+            playing_narration.clear()  # Resume recording after STORY playback
 
 async def send_recording(websocket):
     p = pyaudio.PyAudio()
@@ -81,7 +87,7 @@ async def send_recording(websocket):
             if not playing_narration.is_set():
                 await websocket.send(audio_chunk)
                 # TODO check this
-                await asyncio.sleep(0)
+            await asyncio.sleep(0)
     except KeyboardInterrupt:
         print("Stopped streaming.")
     finally:
@@ -167,8 +173,7 @@ async def receive_audio(websocket):
                 # Check if the sequence is complete
                 if len(accumulated_audio[sequence_id]) >= audio_size:
                     print(f"Received complete sequence for {indicator} with ID {sequence_id}.")
-                    asyncio.create_task(play_audio(accumulated_audio.pop(sequence_id), sample_rate=sample_rate))
-
+                    asyncio.create_task(play_audio(accumulated_audio.pop(sequence_id), sample_rate=sample_rate, indicator=indicator))
         except websockets.ConnectionClosed:
             print("WebSocket connection closed.")
             break
@@ -212,9 +217,10 @@ async def main():
         if is_uuid(message):
             print("Received UUID:", message)
 
+            # send_task = asyncio.create_task(send_recording(websocket))
             send_task = asyncio.create_task(send_audio(websocket, args.wav_file))
             receive_task = asyncio.create_task(receive_audio(websocket))
             # input_task = asyncio.create_task(poll_input())
-            await asyncio.gather(receive_task)
+            await asyncio.gather(receive_task, send_task)
 
 asyncio.run(main())

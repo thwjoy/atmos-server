@@ -443,13 +443,7 @@ class AudioServer:
 
                  Do not repeat the story I have already written. You should make new words.
 
-                 I also want you to add sounds to each word you have written, where the first element is the 
-                 word and the second element contains None. Do not add any other information
-                 apart from this list. The response should look like this:
-
-                 <your addition to the story>
-
-                 output = [('word', None), ..., ('word', None)]
+                 Only output the story, do not include any other information.
 
                  """
                  },
@@ -463,29 +457,30 @@ class AudioServer:
         # try get the literal
         try:
             response = chat.choices[0].message.content
-            response = response.replace("“", "'").replace("”", "'")
-            match = re.search(r"\[.*\]", response)
-            if match:
-                array_text = match.group(0)
+            # response = response.replace("“", "'").replace("”", "'")
+            # match = re.search(r"\[.*\]", response)
+            # if match:
+            #     text = match.group(0)
                 # Safely evaluate the array text as a Python literal
-                array_literal = ast.literal_eval(array_text)
-            else:
-                logger.warning("No array found in the text.")
-                response = "I didn't catch that, can you try again?".split(" ")
-                array_literal = [(word, None) for word in response]
+                # array_literal = ast.literal_eval(array_text)
+            # else:
+            #     logger.warning("No array found in the text.")
+            #     text = "I didn't catch that, can you try again?".split(" ")
+                # array_literal = [(word, None) for word in response]
         except:
-            response = "I didn't catch that, can you try again?".split(" ")
-            array_literal = [(word, None) for word in response]
+            text = "I didn't catch that, can you try again?".split(" ")
+            # array_literal = [(word, None) for word in response]
 
         
-        words = [word for word, sound in array_literal if sound is None]
-        sounds = [sound for word, sound in array_literal if sound is not None]
-        logger.debug(f"Sounds: {sounds}")
-        sentence = " ".join(words)
-        logger.debug(f"Words: {words}")
+        # words = [word for word, sound in array_literal if sound is None]
+        # sounds = [sound for word, sound in array_literal if sound is not None]
+        # logger.debug(f"Sounds: {sounds}")
+        # sentence = " ".join(words)
+        # logger.debug(f"Words: {words}")
         # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
         # sentence = chat.choices[0].message.content
         # sounds = []
+        sentence = response
 
         audio = self.client.audio.speech.create(
             model="tts-1",
@@ -497,7 +492,7 @@ class AudioServer:
         self.narration_transcript += " " + sentence
         logger.info(f"Narration so far: {self.narration_transcript}")
 
-        return audio.content, sentence, sounds
+        return audio.content, sentence, None
     
     async def send_audio_from_transcript(self, transcript, websocket):
         audio, transcript, sounds = self.get_next_story_section(transcript)
@@ -579,16 +574,16 @@ class AudioServer:
             return
         if isinstance(transcript, aai.RealtimeFinalTranscript):
             logger.info(f"Recieved: {transcript.text}")
-            # if len(self.transcript) < 20: # TODO fix this
-            #     self.transcript += transcript.text
+            # if len(self.narration_transcript) < 20: # TODO fix this
+            #     self.narration_transcript += transcript.text
             #     return
             if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
                 self.music_sent_event.set()
                 self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
-                self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
+                # self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
             else:
                 self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
-                self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
+                # self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
 
     async def send_message_async(self, message, websocket):
         await asyncio.create_task(websocket.send(message))
