@@ -15,8 +15,12 @@ import sqlite3
 import json
 from datetime import datetime
 import uuid
+import soundfile as sf
+import librosa
 
 from data.assembly_db import SoundAssigner
+from openai import OpenAI
+import numpy as np
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -91,31 +95,31 @@ SAMPLE_RATE = 44100
 
 os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
 
-# def load_wav_from_bytes(byte_data):
-#     # Use soundfile to read from the bytes object
-#     with io.BytesIO(byte_data) as bytes_io:
-#         audio_data, sample_rate = sf.read(bytes_io, dtype='float32')  # or 'float32' for normalized values
-#     return sample_rate, np.array(audio_data)
+def load_wav_from_bytes(byte_data):
+    # Use soundfile to read from the bytes object
+    with io.BytesIO(byte_data) as bytes_io:
+        audio_data, sample_rate = sf.read(bytes_io, dtype='float32')  # or 'float32' for normalized values
+    return sample_rate, np.array(audio_data)
 
-# def audio_to_bytes(audio_data, sample_rate):
-#     # Create an in-memory byte buffer
-#     with io.BytesIO() as buffer:
-#         # Write the audio data to the buffer as a WAV file
-#         sf.write(buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
+def audio_to_bytes(audio_data, sample_rate):
+    # Create an in-memory byte buffer
+    with io.BytesIO() as buffer:
+        # Write the audio data to the buffer as a WAV file
+        sf.write(buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
         
-#         # Retrieve the byte data from the buffer
-#         audio_bytes = buffer.getvalue()
+        # Retrieve the byte data from the buffer
+        audio_bytes = buffer.getvalue()
         
-#     return audio_bytes
+    return audio_bytes
 
-# def resample_audio(audio, orig_sample_rate, target_sample_rate=44100):
-#     # Convert the audio to a numpy array if it's not already
-#     if not isinstance(audio, np.ndarray):
-#         audio = np.array(audio)
+def resample_audio(audio, orig_sample_rate, target_sample_rate=44100):
+    # Convert the audio to a numpy array if it's not already
+    if not isinstance(audio, np.ndarray):
+        audio = np.array(audio)
     
-#     # Resample the audio to the target sample rate
-#     resampled_audio = librosa.resample(audio, orig_sample_rate, target_sample_rate)
-#     return resampled_audio
+    # Resample the audio to the target sample rate
+    resampled_audio = librosa.resample(audio, orig_sample_rate, target_sample_rate)
+    return resampled_audio
 
 async def read_audio_in_chunks(audio_path, chunk_size):
         """Read an audio file in chunks asynchronously."""
@@ -356,6 +360,7 @@ class SharedResources:
     def __init__(self):
         self.assigner_SFX = SoundAssigner(chroma_name="SFX_db", data_root="./data/datasets")
         self.assigner_Music = SoundAssigner(chroma_name="SA_db", data_root="./data/datasets")
+        self.openai = OpenAI()
 
 shared_resources = SharedResources()
 
@@ -372,8 +377,10 @@ class AudioServer:
         aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094"
         self.assigner_SFX = shared_resources.assigner_SFX
         self.assigner_Music = shared_resources.assigner_Music
+        self.client = shared_resources.openai
         self.sfx_score_threshold = 1.2
         self.music_score_threshold = 1.2
+        self.narration_transcript = ""
         self.transcript = {
             "transcript": [],
             "sounds": [],
@@ -395,102 +402,101 @@ class AudioServer:
         await asyncio.gather(*self.tasks, return_exceptions=True)
         logger.info(f"All tasks have been canceled and cleaned up.")
 
-    # def get_next_story_section(self, transcript):
-    #     # use ChatGPT to generate the next section of the story
-    #     self.transcript += transcript
-    #     logger.debug(self.transcript)
-    #     chat = self.client.chat.completions.create(
-    #         model="gpt-4o",
-    #         modalities=["text"],
-    #         audio={"voice": "alloy", "format": "wav"},
-    #         messages=[
-    #             {"role": "system", "content": f"""You are a helpful assistent
-    #              who is going to make a story with me. I will start the story
-    #              and you will continue it. Once you have writen a few sentences,
-    #              I will then take over, and we will keep going until we are finished.
-    #              Keep your sections to 2 or 3 sentences maximum.
+    def get_next_story_section(self, transcript):
+        # use ChatGPT to generate the next section of the story
+        self.narration_transcript += transcript
+        chat = self.client.chat.completions.create(
+            model="gpt-4o",
+            modalities=["text"],
+            audio={"voice": "alloy", "format": "wav"},
+            messages=[
+                {"role": "system", "content": f"""You are a helpful assistent
+                 who is going to make a story with me. I will start the story
+                 and you will continue it. Once you have writen a few sentences,
+                 I will then take over, and we will keep going until we are finished.
+                 Keep your sections to 2 or 3 sentences maximum.
 
-    #              The story is for children under 10, keep the language simple and the story fun.
+                 The story is for children under 10, keep the language simple and the story fun.
 
-    #              Do not repeat the story I have already written. You should make new words.
+                 Do not repeat the story I have already written. You should make new words.
 
-    #              I also want you to add sounds to each word you have written, where the first element is the 
-    #              word and the second element contains None. Do not add any other information
-    #              apart from this list. The response should look like this:
+                 I also want you to add sounds to each word you have written, where the first element is the 
+                 word and the second element contains None. Do not add any other information
+                 apart from this list. The response should look like this:
 
-    #              <your addition to the story>
+                 <your addition to the story>
 
-    #              output = [('word', None), ..., ('word', None)]
+                 output = [('word', None), ..., ('word', None)]
 
-    #              """
-    #              },
-    #             {
-    #                 "role": "user",
-    #                 "content": self.transcript
-    #             }
-    #         ]
-    #     )
-    #     # logger.debug(f"ChatGPT response: {chat.choices[0].message.content}")
-    #     # try get the literal
-    #     try:
-    #         response = chat.choices[0].message.content
-    #         response = response.replace("“", "'").replace("”", "'")
-    #         match = re.search(r"\[.*\]", response)
-    #         if match:
-    #             array_text = match.group(0)
-    #             # Safely evaluate the array text as a Python literal
-    #             array_literal = ast.literal_eval(array_text)
-    #         else:
-    #             logger.warning("No array found in the text.")
-    #             response = "I didn't catch that, can you try again?".split(" ")
-    #             array_literal = [(word, None) for word in response]
-    #     except:
-    #         response = "I didn't catch that, can you try again?".split(" ")
-    #         array_literal = [(word, None) for word in response]
+                 """
+                 },
+                {
+                    "role": "user",
+                    "content": self.narration_transcript
+                }
+            ]
+        )
+        # logger.debug(f"ChatGPT response: {chat.choices[0].message.content}")
+        # try get the literal
+        try:
+            response = chat.choices[0].message.content
+            response = response.replace("“", "'").replace("”", "'")
+            match = re.search(r"\[.*\]", response)
+            if match:
+                array_text = match.group(0)
+                # Safely evaluate the array text as a Python literal
+                array_literal = ast.literal_eval(array_text)
+            else:
+                logger.warning("No array found in the text.")
+                response = "I didn't catch that, can you try again?".split(" ")
+                array_literal = [(word, None) for word in response]
+        except:
+            response = "I didn't catch that, can you try again?".split(" ")
+            array_literal = [(word, None) for word in response]
 
-    #     
-    #     words = [word for word, sound in array_literal if sound is None]
-    #     sounds = [sound for word, sound in array_literal if sound is not None]
-    #     logger.debug(f"Sounds: {sounds}")
-    #     sentence = " ".join(words)
-    #     logger.debug(f"Words: {words}")
-    #     # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
-    #     # sentence = chat.choices[0].message.content
-    #     # sounds = []
+        
+        words = [word for word, sound in array_literal if sound is None]
+        sounds = [sound for word, sound in array_literal if sound is not None]
+        logger.debug(f"Sounds: {sounds}")
+        sentence = " ".join(words)
+        logger.debug(f"Words: {words}")
+        # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
+        # sentence = chat.choices[0].message.content
+        # sounds = []
 
-    #     audio = self.client.audio.speech.create(
-    #         model="tts-1",
-    #         voice="alloy",
-    #         response_format="wav",
-    #         input=sentence,
-    #     )
-    #     logger.debug(f"Generated narration")
-    #     self.transcript += " " + sentence
-    #     logger.debug("Transcript: ", self.transcript)
+        audio = self.client.audio.speech.create(
+            model="tts-1",
+            voice="alloy",
+            response_format="wav",
+            input=sentence,
+        )
+        logger.debug(f"Generated narration")
+        self.narration_transcript += " " + sentence
+        logger.info(f"Narration so far: {self.narration_transcript}")
 
-    #     return audio.content, sentence, sounds
+        return audio.content, sentence, sounds
     
-    # async def send_audio_from_transcript(self, transcript, websocket):
-    #     audio, transcript, sounds = self.get_next_story_section(transcript)
-    #     # convert the audio bytes into a wavfile and load as numpy
-    #     sample_rate, audio = load_wav_from_bytes(audio)
-    #     whisper_sample_rate = 16000
-    #     audio = resample_audio(audio, sample_rate, whisper_sample_rate)
-    #     duration = min(10, np.floor(len(audio) / whisper_sample_rate))
-    #     # try:
-    #     #     transcriber = RealTimeTranscriber(
-    #     #                 book=transcript,
-    #     #                 line_offset=0,
-    #     #                 chunk_duration=10,
-    #     #                 audio_window=10,
-    #     #     )
-    #     #     transcriber.process_audio_file(audio)
-    #     #     audio = self.add_sounds_to_audio(audio, sounds, transcriber.get_df(), whisper_sample_rate)
-    #     # except Exception as e:
-    #     #     logger.error(f"Error: {e}")
-    #     audio = audio_to_bytes(audio, whisper_sample_rate)
-    #     logger.info(f"Sending story snippet: {transcript}")
-    #     await self.send_audio_with_header(websocket, audio, "STORY", whisper_sample_rate)
+    async def send_audio_from_transcript(self, transcript, websocket):
+        audio, transcript, sounds = self.get_next_story_section(transcript)
+        # convert the audio bytes into a wavfile and load as numpy
+        sample_rate, audio = load_wav_from_bytes(audio)
+        whisper_sample_rate = 16000
+        audio = resample_audio(audio, sample_rate, whisper_sample_rate)
+        duration = min(10, np.floor(len(audio) / whisper_sample_rate))
+        # try:
+        #     transcriber = RealTimeTranscriber(
+        #                 book=transcript,
+        #                 line_offset=0,
+        #                 chunk_duration=10,
+        #                 audio_window=10,
+        #     )
+        #     transcriber.process_audio_file(audio)
+        #     audio = self.add_sounds_to_audio(audio, sounds, transcriber.get_df(), whisper_sample_rate)
+        # except Exception as e:
+        #     logger.error(f"Error: {e}")
+        audio = audio_to_bytes(audio, whisper_sample_rate)
+        logger.info(f"Sending story snippet: {transcript}")
+        await self.send_audio_with_header(websocket, audio, "STORY", whisper_sample_rate)
 
     # def add_sounds_to_audio(self, audio, sounds, timestamps, sample_rate):
     #     """ for each sound, find the timestamp in timestamps df and insert into audio array"""
@@ -556,10 +562,10 @@ class AudioServer:
             if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
                 self.music_sent_event.set()
                 self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
-                # await self.send_audio_from_transcript(transcript.text, websocket)
+                self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
             else:
                 self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
-                # await self.send_audio_from_transcript(transcript.text, websocket)
+                self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
 
     async def send_message_async(self, message, websocket):
         await asyncio.create_task(websocket.send(message))
