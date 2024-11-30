@@ -19,7 +19,7 @@ import soundfile as sf
 import librosa
 
 from data.assembly_db import SoundAssigner
-from openai import OpenAI
+from openai import AsyncOpenAI
 import numpy as np
 
 from dotenv import load_dotenv
@@ -383,15 +383,16 @@ class SharedResources:
     def __init__(self):
         self.assigner_SFX = SoundAssigner(chroma_name="SFX_db", data_root="./data/datasets")
         self.assigner_Music = SoundAssigner(chroma_name="SA_db", data_root="./data/datasets")
-        self.openai = OpenAI()
+        self.openai = AsyncOpenAI()
 
 shared_resources = SharedResources()
 
 class AudioServer:
 
-    def __init__(self, user_id='-1', host="0.0.0.0", port=8765):
+    def __init__(self, user_id='-1', co_auth=False, host="0.0.0.0", port=8765):
         self.user_id = user_id
         self.session_id = '-1'
+        self.co_auth = co_auth
         set_user_id(user_id)
         self.host = host
         self.port = port
@@ -425,10 +426,10 @@ class AudioServer:
         await asyncio.gather(*self.tasks, return_exceptions=True)
         logger.info(f"All tasks have been canceled and cleaned up.")
 
-    def get_next_story_section(self, transcript):
+    async def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
         self.narration_transcript += transcript
-        chat = self.client.chat.completions.create(
+        chat = await self.client.chat.completions.create(
             model="gpt-4o",
             modalities=["text"],
             audio={"voice": "alloy", "format": "wav"},
@@ -482,7 +483,7 @@ class AudioServer:
         # sounds = []
         sentence = response
 
-        audio = self.client.audio.speech.create(
+        audio = await self.client.audio.speech.create(
             model="tts-1",
             voice="alloy",
             response_format="wav",
@@ -495,7 +496,7 @@ class AudioServer:
         return audio.content, sentence, None
     
     async def send_audio_from_transcript(self, transcript, websocket):
-        audio, transcript, sounds = self.get_next_story_section(transcript)
+        audio, transcript, sounds = await self.get_next_story_section(transcript)
         logger.info(f"Sending story snippet: {transcript}")
         await send_transcript_audio_with_header(websocket, audio, 24000)
 
@@ -580,10 +581,11 @@ class AudioServer:
             if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
                 self.music_sent_event.set()
                 self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
-                # self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
             else:
                 self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
-                # self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
+            
+            if self.co_auth:
+                self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
 
     async def send_message_async(self, message, websocket):
         await asyncio.create_task(websocket.send(message))
@@ -619,7 +621,7 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=100
+                end_utterance_silence_threshold=1000
             )
             # Start the connection
             transcriber.connect()
@@ -671,6 +673,12 @@ class AudioServer:
             logger.error(f"Exception {e}")
             return
         
+        try:
+            co_auth = websocket.request_headers.get("CO-AUTH", "")
+            is_co_auth = co_auth.lower() == "true"
+        except Exception as e:
+            logger.error(f"Unable to determinie CO-AUTH mode {e}")
+    
         # Verify the token
         # Validate the token asynchronously
         try:
@@ -684,7 +692,7 @@ class AudioServer:
         
         # Handle communication after successful authentication
         try:
-            server_instance = AudioServer(user_id)  # Create a new instance for each connection
+            server_instance = AudioServer(user_id, co_auth=is_co_auth)  # Create a new instance for each connection
             await server_instance.audio_receiver(websocket)
         except websockets.ConnectionClosed as e:
             logger.error(f"Connection closed: {e}")

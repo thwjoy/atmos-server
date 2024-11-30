@@ -206,8 +206,11 @@ async def main():
     )
     args = parser.parse_args()
 
+    co_auth = args.wav_file is None
+
     headers = {
-        "Authorization": f"Bearer {TOKEN}"  # Common format for tokens
+        "Authorization": f"Bearer {TOKEN}",  # Common format for tokens
+        "CO-AUTH": f"{co_auth}"
     }
     async with websockets.connect(SERVER_URI, extra_headers=headers) as websocket:
         # recieve the first message
@@ -217,8 +220,10 @@ async def main():
         if is_uuid(message):
             print("Received UUID:", message)
 
-            # send_task = asyncio.create_task(send_recording(websocket))
-            send_task = asyncio.create_task(send_audio(websocket, args.wav_file))
+            if co_auth:
+                send_task = asyncio.create_task(send_recording(websocket))
+            else:
+                send_task = asyncio.create_task(send_audio(websocket, args.wav_file))
             receive_task = asyncio.create_task(receive_audio(websocket))
             # input_task = asyncio.create_task(poll_input())
             await asyncio.gather(receive_task, send_task)
