@@ -49,9 +49,13 @@ async def read_audio_in_chunks(audio_path, chunk_size):
 
 async def send_with_backpressure(websocket, data, buffer_limit=10_000_000):
     """Send data to the WebSocket with backpressure handling."""
-    while websocket.transport.get_write_buffer_size() > buffer_limit:
+    while websocket.transport and websocket.transport.get_write_buffer_size() > buffer_limit:
         await asyncio.sleep(0.1)  # Wait for the buffer to drain
-    await websocket.send(data)
+    
+    if websocket.transport:
+        await websocket.send(data)
+    else:
+        raise RuntimeError("WebSocket transport is not available. Connection might be closed.")
 
 async def send_audio_with_header(websocket, audio_path, indicator, chunk_size=1024 * 512):
     """Send audio in chunks with header containing packet size, packet count, sample rate, and unique sequence ID."""
