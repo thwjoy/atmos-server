@@ -1,369 +1,56 @@
 
-import io
-import assemblyai as aai
-import pydub
 import asyncio
 import websockets
-import struct
 import os
-import jwt
-from contextvars import ContextVar
-import logging
+
+
+
+
+import assemblyai as aai
+from openai import AsyncOpenAI
+import numpy as np
 import ssl
-import threading
-import sqlite3
-import json
-from datetime import datetime
-import uuid
 
+
+from utils.session_utils import (is_rate_limited_ip, is_rate_limited_user,
+                           validate_token, TokenValidationError,
+                           DatabaseManager)
+
+from utils.logging_utils import configure_logging, set_user_id, set_session_id
+from utils.io_utils import send_audio_with_header, send_transcript_audio_with_header
 from data.assembly_db import SoundAssigner
-
 from dotenv import load_dotenv
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
+DEBUG = False
 
-certfile = "/root/.ssh/myatmos_pro_chain.crt"
-keyfile = "/root/.ssh/myatmos.key"
+if not DEBUG:
+    certfile = "/root/.ssh/myatmos_pro_chain.crt"
+    keyfile = "/root/.ssh/myatmos.key"
 
-ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-
-HEADER_FORMAT = ">5sI16sIII"
-
-# Create ContextVars for user_id and session_id
-user_id_context: ContextVar[str] = ContextVar("user_id", default="None")
-session_id_context: ContextVar[str] = ContextVar("session_id", default="None")
-
-# Filter to inject user_id and session_id into every log record
-class ContextFilter(logging.Filter):
-    def filter(self, record):
-        # Add user_id and session_id to the log record
-        record.user_id = user_id_context.get("None")
-        record.session_id = session_id_context.get("None")
-        return True
-
-# Custom Formatter to handle missing fields gracefully
-class SafeFormatter(logging.Formatter):
-    def format(self, record):
-        # Ensure user_id and session_id exist in the record
-        if not hasattr(record, "user_id"):
-            record.user_id = "None"
-        if not hasattr(record, "session_id"):
-            record.session_id = "None"
-        return super().format(record)
-
-# Configure logging
-def configure_logging():
-    formatter = SafeFormatter(
-        "%(asctime)s - %(name)s - %(levelname)s - user_id=%(user_id)s - session_id=%(session_id)s - %(message)s"
-    )    
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    file_handler = logging.FileHandler("app.log")
-    file_handler.setFormatter(formatter)
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.INFO)
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
-
-    # Add the UserIDFilter to the root logger
-    root_logger.addFilter(ContextFilter())
-    return root_logger
-
-# Set user_id in the ContextVar
-def set_user_id(user_id: str):
-    user_id_context.set(user_id)
-
-# Set session_id in the ContextVar
-def set_session_id(session_id: str):
-    session_id_context.set(session_id)
-
-# Reset user_id and session_id to their defaults
-def reset_context():
-    user_id_context.set("None")
-    session_id_context.set("None")
-
-RATE_LIMIT = 3  # Max 10 connections per IP/USER
-RATE_LIMIT_WINDOW = 60  # In seconds
-SAMPLE_RATE = 44100
-
-os.environ["OPENAI_API_KEY"] = OPENAI_API_KEY
-
-# def load_wav_from_bytes(byte_data):
-#     # Use soundfile to read from the bytes object
-#     with io.BytesIO(byte_data) as bytes_io:
-#         audio_data, sample_rate = sf.read(bytes_io, dtype='float32')  # or 'float32' for normalized values
-#     return sample_rate, np.array(audio_data)
-
-# def audio_to_bytes(audio_data, sample_rate):
-#     # Create an in-memory byte buffer
-#     with io.BytesIO() as buffer:
-#         # Write the audio data to the buffer as a WAV file
-#         sf.write(buffer, audio_data, sample_rate, format='WAV', subtype='PCM_16')
-        
-#         # Retrieve the byte data from the buffer
-#         audio_bytes = buffer.getvalue()
-        
-#     return audio_bytes
-
-# def resample_audio(audio, orig_sample_rate, target_sample_rate=44100):
-#     # Convert the audio to a numpy array if it's not already
-#     if not isinstance(audio, np.ndarray):
-#         audio = np.array(audio)
-    
-#     # Resample the audio to the target sample rate
-#     resampled_audio = librosa.resample(audio, orig_sample_rate, target_sample_rate)
-#     return resampled_audio
-
-async def read_audio_in_chunks(audio_path, chunk_size):
-        """Read an audio file in chunks asynchronously."""
-        if not os.path.exists(audio_path):
-            raise FileNotFoundError(f"File not found: {audio_path}")
-    
-        loop = asyncio.get_running_loop()
-        with open(audio_path, "rb") as audio_file:
-            while chunk := await loop.run_in_executor(None, audio_file.read, chunk_size):
-                yield chunk
-
-async def send_with_backpressure(websocket, data, buffer_limit=10_000_000):
-    """Send data to the WebSocket with backpressure handling."""
-    while websocket.transport.get_write_buffer_size() > buffer_limit:
-        await asyncio.sleep(0.1)  # Wait for the buffer to drain
-    await websocket.send(data)
-
-async def send_audio_with_header(websocket, audio_path, indicator, chunk_size=1024 * 512):
-    """Send audio in chunks with header containing packet size, packet count, sample rate, and unique sequence ID."""
-    if not os.path.exists(audio_path):
-        raise FileNotFoundError(f"File not found: {audio_path}")
-
-    file_size = os.path.getsize(audio_path)
-    total_packets = (file_size + chunk_size - 1) // chunk_size  # Calculate total packet count
-
-    # Retrieve sample rate (assume WAV format)
-    sample_rate = 44100
-
-    # Generate a unique sequence ID for this transmission
-    sequence_id = uuid.uuid4().bytes  # UUID as a 32-byte binary string
-
-    queue = asyncio.Queue()
-
-    async def producer():
-        packet_count = 0
-        async for chunk in read_audio_in_chunks(audio_path, chunk_size):
-            await queue.put((packet_count, chunk))  # Add packet count with chunk
-            packet_count += 1
-        await queue.put(None)  # Signal completion
-
-    async def consumer():
-        packet_sent = 0
-
-        while True:
-            try:
-                data = await queue.get()
-                if data is None:  # Completion signal
-                    break
-
-                packet_count, chunk = data
-
-                # Build the header
-                ind = indicator[:5].ljust(5)  # Ensure the indicator is 5 bytes
-                header = struct.pack(
-                    HEADER_FORMAT,       # Updated format
-                    ind.encode(),        # Indicator
-                    file_size,          # Size of this packet
-                    sequence_id,         # Unique sequence ID
-                    packet_count,        # Packet count (sequence number)
-                    total_packets,       # Total packets
-                    sample_rate          # Sample rate
-                )
-
-                # Send the chunk with the header
-                await send_with_backpressure(websocket, header + chunk)
-                packet_sent += 1
-
-            except websockets.ConnectionClosed as e:
-                logger.error(f"WebSocket closed during send: {e}")
-                raise
-
-    try:
-        await asyncio.gather(
-            asyncio.create_task(producer()),
-            asyncio.create_task(consumer())
-        )
-        logger.info(f"Successfully sent packets with Sequence ID: {uuid.UUID(bytes=sequence_id)}.")
-    except Exception as e:
-        logger.error(f"Error in send_audio_with_header: {e}")
+    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+else:
+    ssl_context = None
 
 
-class TokenValidationError(Exception):
-    """Custom exception for token validation failures."""
-    pass
 
-async def validate_token(token):
-    try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        user_id = payload.get("user_id")
-
-        if is_rate_limited_user(user_id):
-            raise TokenValidationError("Rate limit exceeded for user")
-        
-        return user_id
-    except jwt.ExpiredSignatureError:
-        raise TokenValidationError("Token expired")
-    except jwt.InvalidTokenError as e:
-        raise TokenValidationError(f"Invalid token: {str(e)}")
-
-import time
-
-connection_attempts_ip = {}
-
-def is_rate_limited_ip(ip: str) -> bool:
-    current_time = time.time()
-    if ip not in connection_attempts_ip:
-        connection_attempts_ip[ip] = [current_time]
-        return False
-    
-    # Filter out old attempts
-    connection_attempts_ip[ip] = [
-        ts for ts in connection_attempts_ip[ip] if current_time - ts < RATE_LIMIT_WINDOW
-    ]
-    
-    # Add the current attempt
-    connection_attempts_ip[ip].append(current_time)
-    
-    # Check if rate limit is exceeded
-    return len(connection_attempts_ip[ip]) > RATE_LIMIT
-
-connection_attempts_user = {}
-
-def is_rate_limited_user(user_id: str) -> bool:
-    current_time = time.time()
-    if user_id not in connection_attempts_user:
-        connection_attempts_user[user_id] = [current_time]
-        return False
-    
-    # Filter out old attempts
-    connection_attempts_user[user_id] = [
-        ts for ts in connection_attempts_user[user_id] if current_time - ts < RATE_LIMIT_WINDOW
-    ]
-    
-    # Add the current attempt
-    connection_attempts_user[user_id].append(current_time)
-    
-    # Check if rate limit is exceeded
-    return len(connection_attempts_user[user_id]) > RATE_LIMIT
-
-async def monitored_task(coro, name="Unnamed Task"):
-    try:
-        await coro
-    except Exception as e:
-        logger.error(f"Error in task {name}: {e}")
-
-# class TranscriberWrapper:
-#     def __init__(self, **kwargs):
-#         self.transcriber = aai.RealtimeTranscriber(**kwargs)
-
-#     async def connect(self):
-#         self.transcriber.connect()
-#         logger.info("Transcriber connected")
-#         return self
-
-#     async def close(self):
-#         self.transcriber.close()
-#         logger.info("Transcriber closed")
-
-#     def stream(self, data):
-#         self.transcriber.stream(data)
-
-#     async def __aenter__(self):
-#         return await self.connect()
-
-#     async def __aexit__(self, exc_type, exc_value, traceback):
-#         await self.close()
-
-
-class DatabaseManager:
-    def __init__(self, db_path="database.db"):
-        self.db_path = db_path
-        self.local = threading.local()  # Thread-local storage
-
-    def connect(self):
-        """Get a thread-local connection."""
-        if not hasattr(self.local, "connection"):
-            self.local.connection = sqlite3.connect(self.db_path)
-        return self.local.connection
-
-    def initialize(self):
-        """Create tables if they don't exist."""
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS transcripts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    connection_id TEXT NOT NULL,
-                    data TEXT NOT NULL
-                )
-            ''')
-            conn.commit()
-            # Create sessions table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id TEXT NOT NULL,
-                    start_time TEXT NOT NULL,
-                    stop_time TEXT
-                )
-            ''')
-            conn.commit()
-
-    def insert_transcript_data(self, connection_id, data):
-        """Insert data for a specific connection."""
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO transcripts (connection_id, data) VALUES (?, ?)",
-                (str(connection_id), json.dumps(data))
-            )
-            conn.commit()
-
-    def log_session_start(self, user_id):
-        """Log the start of a session."""
-        start_time = datetime.utcnow().isoformat()  # Use ISO 8601 format
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO sessions (user_id, start_time) VALUES (?, ?)",
-                (user_id, start_time)
-            )
-            conn.commit()
-            return cursor.lastrowid  # Return the session ID for reference
-
-
-    def log_session_stop(self, session_id):
-        """Log the stop of a session."""
-        stop_time = datetime.utcnow().isoformat()
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "UPDATE sessions SET stop_time = ? WHERE id = ?",
-                (stop_time, session_id)
-            )
-            conn.commit()
 
 class SharedResources:
     def __init__(self):
         self.assigner_SFX = SoundAssigner(chroma_name="SFX_db", data_root="./data/datasets")
         self.assigner_Music = SoundAssigner(chroma_name="SA_db", data_root="./data/datasets")
+        self.openai = AsyncOpenAI()
 
 shared_resources = SharedResources()
 
 class AudioServer:
 
-    def __init__(self, user_id='-1', host="0.0.0.0", port=8765):
+    def __init__(self, user_id='-1', co_auth=False, host="0.0.0.0", port=8765):
         self.user_id = user_id
         self.session_id = '-1'
+        self.co_auth = co_auth
         set_user_id(user_id)
         self.host = host
         self.port = port
@@ -372,8 +59,10 @@ class AudioServer:
         aai.settings.api_key = "09485e2cc7b741d4aa2922da67f84094"
         self.assigner_SFX = shared_resources.assigner_SFX
         self.assigner_Music = shared_resources.assigner_Music
+        self.client = shared_resources.openai
         self.sfx_score_threshold = 1.2
         self.music_score_threshold = 1.2
+        self.narration_transcript = ""
         self.transcript = {
             "transcript": [],
             "sounds": [],
@@ -395,102 +84,96 @@ class AudioServer:
         await asyncio.gather(*self.tasks, return_exceptions=True)
         logger.info(f"All tasks have been canceled and cleaned up.")
 
-    # def get_next_story_section(self, transcript):
-    #     # use ChatGPT to generate the next section of the story
-    #     self.transcript += transcript
-    #     logger.debug(self.transcript)
-    #     chat = self.client.chat.completions.create(
-    #         model="gpt-4o",
-    #         modalities=["text"],
-    #         audio={"voice": "alloy", "format": "wav"},
-    #         messages=[
-    #             {"role": "system", "content": f"""You are a helpful assistent
-    #              who is going to make a story with me. I will start the story
-    #              and you will continue it. Once you have writen a few sentences,
-    #              I will then take over, and we will keep going until we are finished.
-    #              Keep your sections to 2 or 3 sentences maximum.
+    async def get_next_story_section(self, transcript):
+        # use ChatGPT to generate the next section of the story
+        self.narration_transcript += transcript
+        chat = await self.client.chat.completions.create(
+            model="gpt-4o",
+            modalities=["text"],
+            audio={"voice": "alloy", "format": "wav"},
+            messages=[
+                {"role": "system", "content": f"""You are a helpful assistent
+                 who is going to make a story with me. I will start the story
+                 and you will continue it. Once you have writen a few sentences,
+                 I will then take over, and we will keep going until we are finished.
+                 Keep your sections to 2 or 3 sentences maximum.
 
-    #              The story is for children under 10, keep the language simple and the story fun.
+                 The story is for children under 10, keep the language simple and the story fun.
 
-    #              Do not repeat the story I have already written. You should make new words.
+                 Do not repeat the story I have already written. You should make new words.
 
-    #              I also want you to add sounds to each word you have written, where the first element is the 
-    #              word and the second element contains None. Do not add any other information
-    #              apart from this list. The response should look like this:
+                 Only output the story, do not include any other information.
 
-    #              <your addition to the story>
+                 """
+                 },
+                {
+                    "role": "user",
+                    "content": self.narration_transcript
+                }
+            ]
+        )
+        # logger.debug(f"ChatGPT response: {chat.choices[0].message.content}")
+        # try get the literal
+        try:
+            response = chat.choices[0].message.content
+            # response = response.replace("“", "'").replace("”", "'")
+            # match = re.search(r"\[.*\]", response)
+            # if match:
+            #     text = match.group(0)
+                # Safely evaluate the array text as a Python literal
+                # array_literal = ast.literal_eval(array_text)
+            # else:
+            #     logger.warning("No array found in the text.")
+            #     text = "I didn't catch that, can you try again?".split(" ")
+                # array_literal = [(word, None) for word in response]
+        except:
+            text = "I didn't catch that, can you try again?".split(" ")
+            # array_literal = [(word, None) for word in response]
 
-    #              output = [('word', None), ..., ('word', None)]
+        
+        # words = [word for word, sound in array_literal if sound is None]
+        # sounds = [sound for word, sound in array_literal if sound is not None]
+        # logger.debug(f"Sounds: {sounds}")
+        # sentence = " ".join(words)
+        # logger.debug(f"Words: {words}")
+        # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
+        # sentence = chat.choices[0].message.content
+        # sounds = []
+        sentence = response
 
-    #              """
-    #              },
-    #             {
-    #                 "role": "user",
-    #                 "content": self.transcript
-    #             }
-    #         ]
-    #     )
-    #     # logger.debug(f"ChatGPT response: {chat.choices[0].message.content}")
-    #     # try get the literal
-    #     try:
-    #         response = chat.choices[0].message.content
-    #         response = response.replace("“", "'").replace("”", "'")
-    #         match = re.search(r"\[.*\]", response)
-    #         if match:
-    #             array_text = match.group(0)
-    #             # Safely evaluate the array text as a Python literal
-    #             array_literal = ast.literal_eval(array_text)
-    #         else:
-    #             logger.warning("No array found in the text.")
-    #             response = "I didn't catch that, can you try again?".split(" ")
-    #             array_literal = [(word, None) for word in response]
-    #     except:
-    #         response = "I didn't catch that, can you try again?".split(" ")
-    #         array_literal = [(word, None) for word in response]
+        audio = await self.client.audio.speech.create(
+            model="tts-1",
+            voice="alloy",
+            response_format="wav",
+            input=sentence,
+        )
+        logger.debug(f"Generated narration")
+        self.narration_transcript += " " + sentence
+        logger.info(f"Narration so far: {self.narration_transcript}")
 
-    #     
-    #     words = [word for word, sound in array_literal if sound is None]
-    #     sounds = [sound for word, sound in array_literal if sound is not None]
-    #     logger.debug(f"Sounds: {sounds}")
-    #     sentence = " ".join(words)
-    #     logger.debug(f"Words: {words}")
-    #     # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
-    #     # sentence = chat.choices[0].message.content
-    #     # sounds = []
-
-    #     audio = self.client.audio.speech.create(
-    #         model="tts-1",
-    #         voice="alloy",
-    #         response_format="wav",
-    #         input=sentence,
-    #     )
-    #     logger.debug(f"Generated narration")
-    #     self.transcript += " " + sentence
-    #     logger.debug("Transcript: ", self.transcript)
-
-    #     return audio.content, sentence, sounds
+        return audio.content, sentence, None
     
-    # async def send_audio_from_transcript(self, transcript, websocket):
-    #     audio, transcript, sounds = self.get_next_story_section(transcript)
-    #     # convert the audio bytes into a wavfile and load as numpy
-    #     sample_rate, audio = load_wav_from_bytes(audio)
-    #     whisper_sample_rate = 16000
-    #     audio = resample_audio(audio, sample_rate, whisper_sample_rate)
-    #     duration = min(10, np.floor(len(audio) / whisper_sample_rate))
-    #     # try:
-    #     #     transcriber = RealTimeTranscriber(
-    #     #                 book=transcript,
-    #     #                 line_offset=0,
-    #     #                 chunk_duration=10,
-    #     #                 audio_window=10,
-    #     #     )
-    #     #     transcriber.process_audio_file(audio)
-    #     #     audio = self.add_sounds_to_audio(audio, sounds, transcriber.get_df(), whisper_sample_rate)
-    #     # except Exception as e:
-    #     #     logger.error(f"Error: {e}")
-    #     audio = audio_to_bytes(audio, whisper_sample_rate)
-    #     logger.info(f"Sending story snippet: {transcript}")
-    #     await self.send_audio_with_header(websocket, audio, "STORY", whisper_sample_rate)
+    async def send_audio_from_transcript(self, transcript, websocket):
+        audio, transcript, sounds = await self.get_next_story_section(transcript)
+        logger.info(f"Sending story snippet: {transcript}")
+        await send_transcript_audio_with_header(websocket, audio, 24000)
+
+
+        # whisper_sample_rate = 16000
+        # audio = resample_audio(audio, sample_rate, whisper_sample_rate)
+        # duration = min(10, np.floor(len(audio) / whisper_sample_rate))
+        # try:
+        #     transcriber = RealTimeTranscriber(
+        #                 book=transcript,
+        #                 line_offset=0,
+        #                 chunk_duration=10,
+        #                 audio_window=10,
+        #     )
+        #     transcriber.process_audio_file(audio)
+        #     audio = self.add_sounds_to_audio(audio, sounds, transcriber.get_df(), whisper_sample_rate)
+        # except Exception as e:
+        #     logger.error(f"Error: {e}")
+        # audio = audio_to_bytes(audio, whisper_sample_rate)
 
     # def add_sounds_to_audio(self, audio, sounds, timestamps, sample_rate):
     #     """ for each sound, find the timestamp in timestamps df and insert into audio array"""
@@ -550,16 +233,17 @@ class AudioServer:
             return
         if isinstance(transcript, aai.RealtimeFinalTranscript):
             logger.info(f"Recieved: {transcript.text}")
-            # if len(self.transcript) < 20: # TODO fix this
-            #     self.transcript += transcript.text
+            # if len(self.narration_transcript) < 20: # TODO fix this
+            #     self.narration_transcript += transcript.text
             #     return
             if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
                 self.music_sent_event.set()
                 self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
-                # await self.send_audio_from_transcript(transcript.text, websocket)
             else:
                 self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
-                # await self.send_audio_from_transcript(transcript.text, websocket)
+            
+            if self.co_auth:
+                self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
 
     async def send_message_async(self, message, websocket):
         await asyncio.create_task(websocket.send(message))
@@ -595,7 +279,7 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=100
+                end_utterance_silence_threshold=1000
             )
             # Start the connection
             transcriber.connect()
@@ -647,6 +331,12 @@ class AudioServer:
             logger.error(f"Exception {e}")
             return
         
+        try:
+            co_auth = websocket.request_headers.get("CO-AUTH", "")
+            is_co_auth = co_auth.lower() == "true"
+        except Exception as e:
+            logger.error(f"Unable to determinie CO-AUTH mode {e}")
+    
         # Verify the token
         # Validate the token asynchronously
         try:
@@ -660,7 +350,7 @@ class AudioServer:
         
         # Handle communication after successful authentication
         try:
-            server_instance = AudioServer(user_id)  # Create a new instance for each connection
+            server_instance = AudioServer(user_id, co_auth=is_co_auth)  # Create a new instance for each connection
             await server_instance.audio_receiver(websocket)
         except websockets.ConnectionClosed as e:
             logger.error(f"Connection closed: {e}")
