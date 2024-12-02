@@ -2,7 +2,7 @@ import asyncio
 import os
 import struct
 import uuid
-import librosa
+# import librosa
 import numpy as np
 import logging 
 
@@ -28,14 +28,14 @@ HEADER_FORMAT = ">5sI16sIII"
 
 logger=logging.getLogger(__name__)
 
-def resample_audio(audio, orig_sample_rate, target_sample_rate=44100):
-    # Convert the audio to a numpy array if it's not already
-    if not isinstance(audio, np.ndarray):
-        audio = np.array(audio)
+# def resample_audio(audio, orig_sample_rate, target_sample_rate=44100):
+#     # Convert the audio to a numpy array if it's not already
+#     if not isinstance(audio, np.ndarray):
+#         audio = np.array(audio)
     
-    # Resample the audio to the target sample rate
-    resampled_audio = librosa.resample(audio, orig_sample_rate, target_sample_rate)
-    return resampled_audio
+#     # Resample the audio to the target sample rate
+#     resampled_audio = librosa.resample(audio, orig_sample_rate, target_sample_rate)
+#     return resampled_audio
 
 async def read_audio_in_chunks(audio_path, chunk_size):
         """Read an audio file in chunks asynchronously."""
