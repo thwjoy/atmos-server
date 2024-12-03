@@ -1,6 +1,8 @@
 import secrets
 import jwt
 import datetime
+from dotenv import load_dotenv
+import os
 
 """
 Generated Secret Key: 08954bc12212acf67aa177bf177040ae38371f84cc491ad69b3d24632deb9e17
@@ -42,7 +44,8 @@ def generate_user_token(user_id, secret_key, expiration_hours=240):
 # Example Usage
 if __name__ == "__main__":
     # Generate a secret key (store securely in practice)
-    secret_key = generate_secret_key()
+    load_dotenv()
+    secret_key = os.getenv("SECRET_KEY")
 
     # Generate a token for a user with ID 1
     user_id = 1
