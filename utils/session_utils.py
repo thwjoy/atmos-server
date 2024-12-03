@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-RATE_LIMIT = 3  # Max 10 connections per IP/USER
+RATE_LIMIT = 20  # Max 10 connections per IP/USER
 RATE_LIMIT_WINDOW = 60  # In seconds
 SAMPLE_RATE = 44100
 
@@ -115,11 +115,15 @@ class DatabaseManager:
         """Create tables if they don't exist."""
         with self.connect() as conn:
             cursor = conn.cursor()
+            # Create transcripts table with additional boolean fields
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS transcripts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     connection_id TEXT NOT NULL,
-                    data TEXT NOT NULL
+                    data TEXT NOT NULL,
+                    co_auth BOOLEAN NOT NULL DEFAULT 0,
+                    music BOOLEAN NOT NULL DEFAULT 0,
+                    sfx BOOLEAN NOT NULL DEFAULT 0
                 )
             ''')
             conn.commit()
@@ -134,13 +138,16 @@ class DatabaseManager:
             ''')
             conn.commit()
 
-    def insert_transcript_data(self, connection_id, data):
-        """Insert data for a specific connection."""
+    def insert_transcript_data(self, connection_id, data, co_auth=False, music=False, sfx=False):
+        """Insert data for a specific connection with additional booleans."""
         with self.connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "INSERT INTO transcripts (connection_id, data) VALUES (?, ?)",
-                (str(connection_id), json.dumps(data))
+                '''
+                INSERT INTO transcripts (connection_id, data, co_auth, music, sfx) 
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (str(connection_id), json.dumps(data), co_auth, music, sfx)
             )
             conn.commit()
 

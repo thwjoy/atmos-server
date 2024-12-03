@@ -47,10 +47,12 @@ shared_resources = SharedResources()
 
 class AudioServer:
 
-    def __init__(self, user_id='-1', co_auth=False, host="0.0.0.0", port=8765):
+    def __init__(self, user_id='-1', co_auth=False, music=False, sfx=False, host="0.0.0.0", port=8765):
         self.user_id = user_id
         self.session_id = '-1'
         self.co_auth = co_auth
+        self.music = music
+        self.sfx = sfx
         set_user_id(user_id)
         self.host = host
         self.port = port
@@ -139,7 +141,7 @@ class AudioServer:
         # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
         # sentence = chat.choices[0].message.content
         # sounds = []
-        sentence = response
+        sentence = response + " Now it's your turn."
 
         audio = await self.client.audio.speech.create(
             model="tts-1",
@@ -156,6 +158,7 @@ class AudioServer:
     async def send_audio_from_transcript(self, transcript, websocket):
         audio, transcript, sounds = await self.get_next_story_section(transcript)
         logger.info(f"Sending story snippet: {transcript}")
+        self.insert_transcript_section(transcript, "", 0.0)
         await send_transcript_audio_with_header(websocket, audio, 24000)
 
 
@@ -236,11 +239,12 @@ class AudioServer:
             # if len(self.narration_transcript) < 20: # TODO fix this
             #     self.narration_transcript += transcript.text
             #     return
-            if not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-                self.music_sent_event.set()
-                self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
+            if self.music and not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
+                    self.music_sent_event.set()
+                    self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
             else:
-                self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
+                if self.sfx:
+                    self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
             
             if self.co_auth:
                 self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
@@ -264,7 +268,11 @@ class AudioServer:
 
     def on_close(self, websocket):
         try:
-            db_manager.insert_transcript_data(self.session_id, self.transcript)
+            db_manager.insert_transcript_data(self.session_id,
+                                              self.transcript,
+                                              co_auth=self.co_auth,
+                                              music=self.music,
+                                              sfx=self.sfx)
         except Exception as e:
             logger.error(f"Failed to save transcript to db: {str(e)}")
 
@@ -336,8 +344,22 @@ class AudioServer:
             is_co_auth = co_auth.lower() == "true"
         except Exception as e:
             logger.error(f"Unable to determinie CO-AUTH mode {e}")
-    
-        # Verify the token
+            is_co_auth = False
+
+        try:
+            music = websocket.request_headers.get("MUSIC", "")
+            is_music = music.lower() == "true"
+        except Exception as e:
+            logger.error(f"Unable to determinie MUSIC mode {e}")
+            is_music = False
+
+        try:
+            sfx = websocket.request_headers.get("SFX", "")
+            is_sfx = sfx.lower() == "true"
+        except Exception as e:
+            logger.error(f"Unable to determinie SFX mode {e}")
+            is_sfx = False
+
         # Validate the token asynchronously
         try:
             user_id = await validate_token(token)
@@ -350,7 +372,10 @@ class AudioServer:
         
         # Handle communication after successful authentication
         try:
-            server_instance = AudioServer(user_id, co_auth=is_co_auth)  # Create a new instance for each connection
+            server_instance = AudioServer(user_id,
+                                          co_auth=is_co_auth,
+                                          music=is_music,
+                                          sfx=is_sfx)  # Create a new instance for each connection
             await server_instance.audio_receiver(websocket)
         except websockets.ConnectionClosed as e:
             logger.error(f"Connection closed: {e}")
