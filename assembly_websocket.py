@@ -2,7 +2,7 @@
 import asyncio
 import websockets
 import os
-
+import time
 
 
 
@@ -62,9 +62,17 @@ class AudioServer:
         self.assigner_SFX = shared_resources.assigner_SFX
         self.assigner_Music = shared_resources.assigner_Music
         self.client = shared_resources.openai
-        self.sfx_score_threshold = 1.2
+        self.sfx_score_threshold = 1.1
         self.music_score_threshold = 1.2
         self.narration_transcript = ""
+        self.last_sfx_lock = asyncio.Lock()
+        self.last_sfx = ""
+        self.last_sfx_time = 0
+        self.last_narration_turn = ""
+        self.last_narration_time = 0
+        self.last_narration_lock = asyncio.Lock()
+        self.ignore_transcripts = False 
+        self.debounce_task = None
         self.transcript = {
             "transcript": [],
             "sounds": [],
@@ -156,35 +164,51 @@ class AudioServer:
         return audio.content, sentence, None
     
     async def send_audio_from_transcript(self, transcript, websocket):
-        audio, transcript, sounds = await self.get_next_story_section(transcript)
-        logger.info(f"Sending story snippet: {transcript}")
-        self.insert_transcript_section(transcript, "", 0.0)
-        await send_transcript_audio_with_header(websocket, audio, 24000)
+        """Handles incoming transcript and sends audio after a 3-second pause."""
+        # If ignoring transcripts, exit early
+        if self.ignore_transcripts:
+            logger.info("Ignoring incoming transcript due to ongoing narration.")
+            return
 
+        self.last_narration_turn += " " + transcript.strip()
+        current_time = time.monotonic()
 
-        # whisper_sample_rate = 16000
-        # audio = resample_audio(audio, sample_rate, whisper_sample_rate)
-        # duration = min(10, np.floor(len(audio) / whisper_sample_rate))
-        # try:
-        #     transcriber = RealTimeTranscriber(
-        #                 book=transcript,
-        #                 line_offset=0,
-        #                 chunk_duration=10,
-        #                 audio_window=10,
-        #     )
-        #     transcriber.process_audio_file(audio)
-        #     audio = self.add_sounds_to_audio(audio, sounds, transcriber.get_df(), whisper_sample_rate)
-        # except Exception as e:
-        #     logger.error(f"Error: {e}")
-        # audio = audio_to_bytes(audio, whisper_sample_rate)
+        async with self.last_narration_lock:
+            # Cancel any running debounce task
+            if self.debounce_task:
+                self.debounce_task.cancel()
+                try:
+                    await self.debounce_task
+                except asyncio.CancelledError:
+                    pass
 
-    # def add_sounds_to_audio(self, audio, sounds, timestamps, sample_rate):
-    #     """ for each sound, find the timestamp in timestamps df and insert into audio array"""
-    #     # loop through each row of timestamps and use word column to find the sound
-    #     for idx, row in timestamps.iterrows():
-    #         # match the sound to the word
-    #         filename, category, score = self.assigner_SFX.retrieve_src_file(row['word'])
-    #     return audio
+            # Start a new debounce task
+            self.debounce_task = asyncio.create_task(self._debounce_and_send(websocket))
+
+    async def _debounce_and_send(self, websocket):
+        """Debounce function that waits 3 seconds before sending narration."""
+        try:
+            await asyncio.sleep(3)  # Wait for the debounce duration
+
+            async with self.last_narration_lock:
+                if self.last_narration_turn.strip():
+                    # Set the ignore flag to prevent new transcripts
+                    self.ignore_transcripts = True
+                    logger.info(f"Now starting narration after debounce.")
+                    
+                    # Process and send the narration
+                    audio, transcript, sounds = await self.get_next_story_section(self.last_narration_turn)
+                    self.last_narration_turn = ""
+                    logger.info(f"Sending story snippet: {transcript}")
+                    self.insert_transcript_section(transcript, "", 0.0)
+                    await send_transcript_audio_with_header(websocket, audio, 24000)
+
+                    # Reset the ignore flag after sending
+                    await asyncio.sleep(3)
+                    self.ignore_transcripts = False
+        except asyncio.CancelledError:
+            # Handle cancellation silently; new transcript triggered reset
+            pass
 
     def insert_transcript_section(self, transcript, sounds, score):
         self.transcript["transcript"].append(transcript),
@@ -194,7 +218,8 @@ class AudioServer:
     
     async def send_music_from_transcript(self, transcript, websocket):
         try:
-            filename, category, score = self.assigner_Music.retrieve_src_file(transcript)
+            transcript_insert = " ".join(self.transcript["transcript"][-10:]) + " " + transcript
+            filename, category, score = self.assigner_Music.retrieve_src_file(transcript_insert)
             if score < self.music_score_threshold:
                 if filename:
                     logger.info(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
@@ -213,13 +238,35 @@ class AudioServer:
             logger.error(f"Unexpected error in send_music_from_transcript: {e}")
 
     async def send_sfx_from_transcript(self, transcript, websocket):
+        # check if it has been at least 3s from last SFX send
+        current_time = time.monotonic()
+        async with self.last_sfx_lock:
+            # Check if at least 3 seconds have passed since the last SFX
+            if current_time - self.last_sfx_time < 3:
+                logger.info(f"Not sending SFX: only {current_time - self.last_sfx_time:.2f}s since last send.")
+                return
         try:
-            filename, category, score = self.assigner_SFX.retrieve_src_file(transcript)
+            transcript_insert = " ".join(self.transcript["transcript"][-2:]) + " " + transcript
+            logger.info(f"Transcript insert {transcript_insert}")
+            filename, category, score = self.assigner_SFX.retrieve_src_file(transcript_insert)
+
+            async with self.last_sfx_lock:
+                # Check for repeat filename
+                if filename == self.last_sfx:
+                    logger.info(f"Not sending repeat of {self.last_sfx}")
+                    self.last_sfx = filename
+                    self.insert_transcript_section(transcript, filename, score)
+                    return
+                else:
+                    self.last_sfx = filename
+
             if score < self.sfx_score_threshold:
                 if filename:
                     logger.info(f"Sending SFX for category '{category}' to client with score: {score}.")
                     self.insert_transcript_section(transcript, filename, score)
                     await send_audio_with_header(websocket, os.path.join(filename), "SFX")
+                    async with self.last_sfx_lock:
+                        self.last_sfx_time = current_time  # Update the last SFX time
                 else:
                     logger.info("No SFX found for the given text.")
             else:
@@ -287,7 +334,7 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=1000
+                end_utterance_silence_threshold=50
             )
             # Start the connection
             transcriber.connect()
