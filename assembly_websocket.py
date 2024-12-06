@@ -49,6 +49,7 @@ class AudioServer:
 
     def __init__(self, user_id='-1', co_auth=False, music=False, sfx=False, host="0.0.0.0", port=8765):
         self.user_id = user_id
+        self.db_session = db_manager.start_session(self.user_id)
         self.session_id = '-1'
         self.co_auth = co_auth
         self.music = music
@@ -62,8 +63,8 @@ class AudioServer:
         self.assigner_SFX = shared_resources.assigner_SFX
         self.assigner_Music = shared_resources.assigner_Music
         self.client = shared_resources.openai
-        self.sfx_score_threshold = 1.1
-        self.music_score_threshold = 1.2
+        self.sfx_score_threshold = 1.2
+        self.music_score_threshold = 1.25
         self.narration_transcript = ""
         self.last_sfx_lock = asyncio.Lock()
         self.last_sfx = ""
@@ -230,6 +231,7 @@ class AudioServer:
             else:
                 logger.warning(f"Not sending audio for category '{category}' to client with score: {score}.")
                 self.music_sent_event.clear()
+                self.music_score_threshold += 0.03
         except websockets.ConnectionClosed as e:
             logger.error(f"WebSocket closed during send_music_from_transcript: {e}")
         except FileNotFoundError as e:
@@ -289,9 +291,9 @@ class AudioServer:
             if self.music and not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
                     self.music_sent_event.set()
                     self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
-            else:
-                if self.sfx:
-                    self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
+
+            if self.sfx:
+                self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
             
             if self.co_auth:
                 self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
@@ -315,11 +317,12 @@ class AudioServer:
 
     def on_close(self, websocket):
         try:
-            db_manager.insert_transcript_data(self.session_id,
-                                              self.transcript,
-                                              co_auth=self.co_auth,
-                                              music=self.music,
-                                              sfx=self.sfx)
+            db_manager.end_session(self.db_session,
+                                   self.session_id,
+                                   self.transcript,
+                                   co_auth=self.co_auth,
+                                   music=self.music,
+                                   sfx=self.sfx)
         except Exception as e:
             logger.error(f"Failed to save transcript to db: {str(e)}")
 
@@ -347,10 +350,10 @@ class AudioServer:
             # await asyncio.sleep(5)
 
             # try:
-            #     self.fire_and_forget(self.send_sfx_from_transcript("horse", websocket))
+            #     self.fire_and_forget(self.send_sfx_from_transcript("cow mooing", websocket))
             # except Exception as e:
             #     logger.error(f"Error sending files: {e}")
-            set_session_id(self.session_id)
+            # set_session_id(self.session_id)
             while True:
                 try:
                     message = await websocket.recv()
@@ -407,11 +410,16 @@ class AudioServer:
             logger.error(f"Unable to determinie SFX mode {e}")
             is_sfx = False
 
+        try:
+            user_name = websocket.request_headers.get("userName", "")
+        except Exception as e:
+            logger.error(f"No username in header")
+            user_name = 'empty'
+
         # Validate the token asynchronously
         try:
             user_id = await validate_token(token)
-            logger.info(f"Connection accepted for user {user_id}")
-            db_session = db_manager.log_session_start(user_id)
+            logger.info(f"Connection accepted for user {user_name}")  
         except TokenValidationError as e:
             await websocket.close(code=4003, reason=str(e))
             logger.warning(f"Connection rejected: {str(e)}")
@@ -419,7 +427,7 @@ class AudioServer:
         
         # Handle communication after successful authentication
         try:
-            server_instance = AudioServer(user_id,
+            server_instance = AudioServer(user_name,
                                           co_auth=is_co_auth,
                                           music=is_music,
                                           sfx=is_sfx)  # Create a new instance for each connection
@@ -433,7 +441,6 @@ class AudioServer:
         except Exception as e:
             logger.error(f"Closing websocket: {e}")
         finally:
-            db_manager.log_session_stop(db_session)
             await server_instance.close_all_tasks()
             await websocket.close()
 
