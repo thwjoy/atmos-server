@@ -111,66 +111,64 @@ class DatabaseManager:
             self.local.connection = sqlite3.connect(self.db_path)
         return self.local.connection
 
+class DatabaseManager:
+    def __init__(self, db_path="database.db"):
+        self.db_path = db_path
+        self.local = threading.local()  # Thread-local storage
+
+    def connect(self):
+        """Get a thread-local connection."""
+        if not hasattr(self.local, "connection"):
+            self.local.connection = sqlite3.connect(self.db_path)
+        return self.local.connection
+
     def initialize(self):
-        """Create tables if they don't exist."""
+        """Create the merged table if it doesn't exist."""
         with self.connect() as conn:
             cursor = conn.cursor()
-            # Create transcripts table with additional boolean fields
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS transcripts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    connection_id TEXT NOT NULL,
-                    data TEXT NOT NULL,
-                    co_auth BOOLEAN NOT NULL DEFAULT 0,
-                    music BOOLEAN NOT NULL DEFAULT 0,
-                    sfx BOOLEAN NOT NULL DEFAULT 0
-                )
-            ''')
-            conn.commit()
-            # Create sessions table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
+                    connection_id TEXT,
+                    data TEXT,
+                    co_auth BOOLEAN NOT NULL DEFAULT 0,
+                    music BOOLEAN NOT NULL DEFAULT 0,
+                    sfx BOOLEAN NOT NULL DEFAULT 0,
                     start_time TEXT NOT NULL,
                     stop_time TEXT
                 )
             ''')
             conn.commit()
 
-    def insert_transcript_data(self, connection_id, data, co_auth=False, music=False, sfx=False):
-        """Insert data for a specific connection with additional booleans."""
+    def start_session(self, user_id):
+        """Start a session by setting start_time."""
+        start_time = datetime.utcnow().isoformat()  # ISO 8601 format
         with self.connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
                 '''
-                INSERT INTO transcripts (connection_id, data, co_auth, music, sfx) 
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO sessions (user_id, start_time)
+                VALUES (?, ?)
                 ''',
-                (str(connection_id), json.dumps(data), co_auth, music, sfx)
-            )
-            conn.commit()
-
-    def log_session_start(self, user_id):
-        """Log the start of a session."""
-        start_time = datetime.utcnow().isoformat()  # Use ISO 8601 format
-        with self.connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                "INSERT INTO sessions (user_id, start_time) VALUES (?, ?)",
                 (user_id, start_time)
             )
             conn.commit()
-            return cursor.lastrowid  # Return the session ID for reference
+            return cursor.lastrowid  # Return the record ID
 
-
-    def log_session_stop(self, session_id):
-        """Log the stop of a session."""
-        stop_time = datetime.utcnow().isoformat()
+    def end_session(
+        self, record_id, connection_id, data, co_auth=False, music=False, sfx=False
+    ):
+        """End a session by updating connection_id, data, and stop_time."""
+        stop_time = datetime.utcnow().isoformat()  # ISO 8601 format
         with self.connect() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "UPDATE sessions SET stop_time = ? WHERE id = ?",
-                (stop_time, session_id)
+                '''
+                UPDATE sessions
+                SET connection_id = ?, data = ?, co_auth = ?, music = ?, sfx = ?, stop_time = ?
+                WHERE id = ?
+                ''',
+                (str(connection_id), json.dumps(data), co_auth, music, sfx, stop_time, record_id)
             )
             conn.commit()
