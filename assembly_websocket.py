@@ -337,7 +337,7 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=50
+                end_utterance_silence_threshold=200
             )
             # Start the connection
             transcriber.connect()

@@ -17,7 +17,7 @@ def generate_secret_key():
     print("Generated Secret Key:", secret_key)
     return secret_key
 
-def generate_user_token(user_id, secret_key, expiration_hours=240):
+def generate_user_token(user_id, secret_key, expiration_hours=24 * 30):
     """
     Generates a JWT token for a user with the given secret key.
     
