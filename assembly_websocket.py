@@ -67,7 +67,7 @@ class AudioServer:
         self.music_score_threshold = 1.25
         self.narration_transcript = ""
         self.last_sfx_lock = asyncio.Lock()
-        self.last_sfx = ""
+        self.last_sfx = []
         self.last_sfx_time = 0
         self.last_narration_turn = ""
         self.last_narration_time = 0
@@ -218,20 +218,26 @@ class AudioServer:
 
     
     async def send_music_from_transcript(self, transcript, websocket):
+        if len(self.transcript["transcript"]) < 10:
+            self.insert_transcript_section(transcript, "", 0.0)
+            self.music_sent_event.clear()
+            return
         try:
             transcript_insert = " ".join(self.transcript["transcript"][-10:]) + " " + transcript
             filename, category, score = self.assigner_Music.retrieve_src_file(transcript_insert)
             if score < self.music_score_threshold:
                 if filename:
                     logger.info(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
-                    self.insert_transcript_section(transcript, filename, score)
                     await send_audio_with_header(websocket, os.path.join(filename), "MUSIC")
                 else:
                     logger.info("No MUSIC found for the given text.")
+                    filename = ""
+                    score = 0.0
             else:
                 logger.warning(f"Not sending audio for category '{category}' to client with score: {score}.")
                 self.music_sent_event.clear()
                 self.music_score_threshold += 0.03
+            self.insert_transcript_section(transcript, filename, score)
         except websockets.ConnectionClosed as e:
             logger.error(f"WebSocket closed during send_music_from_transcript: {e}")
         except FileNotFoundError as e:
@@ -246,6 +252,7 @@ class AudioServer:
             # Check if at least 3 seconds have passed since the last SFX
             if current_time - self.last_sfx_time < 3:
                 logger.info(f"Not sending SFX: only {current_time - self.last_sfx_time:.2f}s since last send.")
+                self.insert_transcript_section(transcript, "", 0.0)
                 return
         try:
             transcript_insert = " ".join(self.transcript["transcript"][-2:]) + " " + transcript
@@ -254,25 +261,27 @@ class AudioServer:
 
             async with self.last_sfx_lock:
                 # Check for repeat filename
-                if filename == self.last_sfx:
-                    logger.info(f"Not sending repeat of {self.last_sfx}")
-                    self.last_sfx = filename
+                if filename in self.transcript["sounds"][-10:]:
+                    logger.info(f"Not sending repeat of {filename}")
+                    # self.last_sfx.append(filename)
                     self.insert_transcript_section(transcript, filename, score)
                     return
-                else:
-                    self.last_sfx = filename
+                # else:
+                #     self.last_sfx = filename
 
             if score < self.sfx_score_threshold:
                 if filename:
                     logger.info(f"Sending SFX for category '{category}' to client with score: {score}.")
-                    self.insert_transcript_section(transcript, filename, score)
                     await send_audio_with_header(websocket, os.path.join(filename), "SFX")
                     async with self.last_sfx_lock:
                         self.last_sfx_time = current_time  # Update the last SFX time
                 else:
                     logger.info("No SFX found for the given text.")
+                    filename = ""
+                    score = 0.0
             else:
                 logger.warning(f"Not sending audio for category '{category}' to client with score: {score}.")
+            self.insert_transcript_section(transcript, filename, score)
         except websockets.ConnectionClosed as e:
             logger.error(f"WebSocket closed during send_sfx_from_transcript: {e}")
         except FileNotFoundError as e:
@@ -389,26 +398,26 @@ class AudioServer:
             logger.error(f"Exception {e}")
             return
         
-        try:
-            co_auth = websocket.request_headers.get("CO-AUTH", "")
-            is_co_auth = co_auth.lower() == "true"
-        except Exception as e:
-            logger.error(f"Unable to determinie CO-AUTH mode {e}")
-            is_co_auth = False
+        # try:
+        #     co_auth = websocket.request_headers.get("CO-AUTH", "")
+        #     is_co_auth = co_auth.lower() == "true"
+        # except Exception as e:
+        #     logger.error(f"Unable to determinie CO-AUTH mode {e}")
+        is_co_auth = True
 
-        try:
-            music = websocket.request_headers.get("MUSIC", "")
-            is_music = music.lower() == "true"
-        except Exception as e:
-            logger.error(f"Unable to determinie MUSIC mode {e}")
-            is_music = False
+        # try:
+        #     music = websocket.request_headers.get("MUSIC", "")
+        #     is_music = music.lower() == "true"
+        # except Exception as e:
+        #     logger.error(f"Unable to determinie MUSIC mode {e}")
+        is_true = True
 
-        try:
-            sfx = websocket.request_headers.get("SFX", "")
-            is_sfx = sfx.lower() == "true"
-        except Exception as e:
-            logger.error(f"Unable to determinie SFX mode {e}")
-            is_sfx = False
+        # try:
+        #     sfx = websocket.request_headers.get("SFX", "")
+        #     is_sfx = sfx.lower() == "true"
+        # except Exception as e:
+        #     logger.error(f"Unable to determinie SFX mode {e}")
+        is_sfx = False
 
         try:
             user_name = websocket.request_headers.get("userName", "")
