@@ -3,7 +3,7 @@ import asyncio
 import websockets
 import os
 import time
-
+import base64
 
 
 import assemblyai as aai
@@ -107,8 +107,8 @@ class AudioServer:
         #     self.narration_transcript += "End the story quickly and do not ask any more questions, add 'The End' at the end."
         #     self.trigger_disconnect = True
         chat = await self.client.chat.completions.create(
-            model="gpt-4o",
-            modalities=["text"],
+            model="gpt-4o-audio-preview",
+            modalities=["text", "audio"],
             audio={"voice": "alloy", "format": "wav"},
             messages=[
                 {"role": "system", "content": f"""You are a helpful assistent
@@ -128,46 +128,14 @@ class AudioServer:
                 }
             ]
         )
-        # logger.debug(f"ChatGPT response: {chat.choices[0].message.content}")
-        # try get the literal
         try:
-            response = chat.choices[0].message.content
-            # response = response.replace("“", "'").replace("”", "'")
-            # match = re.search(r"\[.*\]", response)
-            # if match:
-            #     text = match.group(0)
-                # Safely evaluate the array text as a Python literal
-                # array_literal = ast.literal_eval(array_text)
-            # else:
-            #     logger.warning("No array found in the text.")
-            #     text = "I didn't catch that, can you try again?".split(" ")
-                # array_literal = [(word, None) for word in response]
+            response = chat.choices[0].message.audio.transcript
+            audio = base64.b64decode(chat.choices[0].message.audio.data)
         except:
-            text = "I didn't catch that, can you try again?".split(" ")
-            # array_literal = [(word, None) for word in response]
+            response = "I didn't catch that, can you try again?".split(" ")
+            audio = base64.b64decode("")
 
-        
-        # words = [word for word, sound in array_literal if sound is None]
-        # sounds = [sound for word, sound in array_literal if sound is not None]
-        # logger.debug(f"Sounds: {sounds}")
-        # sentence = " ".join(words)
-        # logger.debug(f"Words: {words}")
-        # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
-        # sentence = chat.choices[0].message.content
-        # sounds = []
-        sentence = response
-
-        audio = await self.client.audio.speech.create(
-            model="tts-1",
-            voice="alloy",
-            response_format="wav",
-            input=sentence,
-        )
-        logger.debug(f"Generated narration")
-        self.narration_transcript += " " + sentence
-        logger.info(f"Narration so far: {self.narration_transcript}")
-
-        return audio.content, sentence, None
+        return audio, response, None
     
     async def send_audio_from_transcript(self, transcript, websocket):
         """Handles incoming transcript and sends audio after a 3-second pause."""
