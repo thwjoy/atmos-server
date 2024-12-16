@@ -4,6 +4,8 @@ import websockets
 import os
 import time
 import base64
+import uuid
+import struct
 
 
 import assemblyai as aai
@@ -18,7 +20,7 @@ from utils.session_utils import (is_rate_limited_ip, is_rate_limited_user,
                            DatabaseManager)
 
 from utils.logging_utils import configure_logging, set_user_id, set_session_id
-from utils.io_utils import send_audio_with_header, send_transcript_audio_with_header
+from utils.io_utils import send_audio_with_header, send_transcript_audio_with_header, HEADER_FORMAT, send_with_backpressure
 from data.assembly_db import SoundAssigner
 from dotenv import load_dotenv
 load_dotenv()
@@ -35,8 +37,43 @@ if not DEBUG:
 else:
     ssl_context = None
 
+def create_empty_wav_header(sample_rate, num_channels, sample_width):
+    """
+    Creates a WAV header for an empty file.
 
+    Parameters:
+    - sample_rate (int): The number of samples per second (e.g., 44100).
+    - num_channels (int): The number of audio channels (e.g., 1 for mono, 2 for stereo).
+    - sample_width (int): The number of bytes per sample (e.g., 2 for 16-bit audio).
 
+    Returns:
+    - bytes: The WAV header as a byte string.
+    """
+    # Derived values
+    byte_rate = sample_rate * num_channels * sample_width
+    block_align = num_channels * sample_width
+    subchunk2_size = 0  # No PCM data yet
+    chunk_size = 36 + subchunk2_size
+
+    # Construct the WAV header using struct
+    header = struct.pack(
+        '<4sI4s4sIHHIIHH4sI',
+        b'RIFF',                # ChunkID: "RIFF"
+        chunk_size,             # ChunkSize: 36 + Subchunk2Size
+        b'WAVE',                # Format: "WAVE"
+        b'fmt ',                # Subchunk1ID: "fmt "
+        16,                     # Subchunk1Size: 16 for PCM
+        1,                      # AudioFormat: 1 for PCM
+        num_channels,           # NumChannels: 1 for mono, 2 for stereo
+        sample_rate,            # SampleRate: Samples per second
+        byte_rate,              # ByteRate: SampleRate * NumChannels * BitsPerSample / 8
+        block_align,            # BlockAlign: NumChannels * BitsPerSample / 8
+        sample_width * 8,       # BitsPerSample: 8 * SampleWidth
+        b'data',                # Subchunk2ID: "data"
+        subchunk2_size          # Subchunk2Size: Number of bytes in PCM data
+    )
+
+    return header
 
 class SharedResources:
     def __init__(self):
@@ -109,7 +146,8 @@ class AudioServer:
         chat = await self.client.chat.completions.create(
             model="gpt-4o-audio-preview",
             modalities=["text", "audio"],
-            audio={"voice": "alloy", "format": "wav"},
+            audio={"voice": "alloy", "format": "pcm16"},
+            stream=True,  # Enable streaming
             messages=[
                 {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
@@ -128,14 +166,7 @@ class AudioServer:
                 }
             ]
         )
-        try:
-            response = chat.choices[0].message.audio.transcript
-            audio = base64.b64decode(chat.choices[0].message.audio.data)
-        except:
-            response = "I didn't catch that, can you try again?".split(" ")
-            audio = base64.b64decode("")
-
-        return audio, response, None
+        return chat
     
     async def send_audio_from_transcript(self, transcript, websocket):
         """Handles incoming transcript and sends audio after a 3-second pause."""
@@ -169,15 +200,43 @@ class AudioServer:
                     # Set the ignore flag to prevent new transcripts
                     self.ignore_transcripts = True
                     logger.info(f"Now starting narration after debounce.")
-                    
+                    sample_rate = 24000
                     # Process and send the narration
-                    await send_audio_with_header(websocket, './data/datasets/filler.wav', "FILL", 24000)
+                    await send_audio_with_header(websocket, './data/datasets/filler.wav', "FILL", sample_rate)
                     # await websocket.send("Pause")
-                    audio, transcript, sounds = await self.get_next_story_section(self.last_narration_turn)
+                    completion = await self.get_next_story_section(self.last_narration_turn)
+
+                    count = 0
+                    sequence_id = uuid.uuid4().bytes
+
+                    wav_header = create_empty_wav_header(sample_rate, 1, 2)
+                    # Build the header
+                    ind = "STORY"[:5].ljust(5)  # Ensure the indicator is 5 bytes
+                    header = struct.pack(
+                        HEADER_FORMAT,       # Updated format
+                        ind.encode(),        # Indicator
+                        len(wav_header),          # Size of this packet
+                        sequence_id,         # Unique sequence ID
+                        count,        # Packet count (sequence number)
+                        count + 1,       # Total packets
+                        sample_rate          # Sample rate
+                    )
+                    await send_with_backpressure(websocket, header + wav_header)
+
+                    transcript = ""
+                    async for chunk in completion:
+                        # Check if audio data exists in the current chunk
+                        if hasattr(chunk.choices[0].delta, 'audio'):
+                            if 'data' in chunk.choices[0].delta.audio:
+                                # Decode the base64-encoded PCM data and write it
+                                pcm_data = base64.b64decode(chunk.choices[0].delta.audio['data'])
+                                await send_with_backpressure(websocket, header + pcm_data)
+                            if 'transcript' in chunk.choices[0].delta.audio:
+                                transcript += chunk.choices[0].delta.audio['transcript']
+
                     self.last_narration_turn = ""
                     logger.info(f"Sending story snippet: {transcript}")
                     self.insert_transcript_section(transcript, "", 0.0)
-                    await send_transcript_audio_with_header(websocket, audio, 24000)
                     await websocket.send("Play")
 
                     # Reset the ignore flag after sending
