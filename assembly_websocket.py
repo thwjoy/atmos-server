@@ -6,6 +6,7 @@ import time
 import base64
 import uuid
 import struct
+import random
 
 
 import assemblyai as aai
@@ -143,6 +144,14 @@ class AudioServer:
         # if self.session_start_time + (self.time_limit) < time.monotonic():
         #     self.narration_transcript += "End the story quickly and do not ask any more questions, add 'The End' at the end."
         #     self.trigger_disconnect = True
+
+        p = random.uniform(0.0, 1.0)
+        if p < 0.3:
+            answer_format = "give me options of where the story should go next."
+        else:
+            answer_format = "tell me it's my turn and ask what should happen next?"
+
+
         chat = await self.client.chat.completions.create(
             model="gpt-4o-audio-preview",
             modalities=["text", "audio"],
@@ -151,10 +160,10 @@ class AudioServer:
             messages=[
                 {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
-                 and you will continue it. Once you have one sentence,
-                 you will ask me or give me options of where the story should go next.
-                 Keep your sections very very short to 1 or 2 sentence maximum.
-
+                 and you will continue it.
+                 Keep your sections to 2 or 3 sentence.
+                 After you've finished {answer_format}
+                 
                  The story is for children under 10, keep the language simple and the story fun.
 
                  Do not repeat the story I have already written. You should make new words.
@@ -202,7 +211,7 @@ class AudioServer:
                     logger.info(f"Now starting narration after debounce.")
                     sample_rate = 24000
                     # Process and send the narration
-                    await send_audio_with_header(websocket, './data/datasets/filler.wav', "FILL", sample_rate)
+                    # await send_audio_with_header(websocket, './data/datasets/filler.wav', "FILL", sample_rate)
                     # await websocket.send("Pause")
                     completion = await self.get_next_story_section(self.last_narration_turn)
 
@@ -384,7 +393,7 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=2000
+                end_utterance_silence_threshold=100
             )
             # Start the connection
             transcriber.connect()
@@ -415,9 +424,9 @@ class AudioServer:
                     message = await websocket.recv()
                     if isinstance(message, str):
                         if message == "STOP":
-                            self.debounce_time = 2
+                            self.debounce_time = 1
                         if message == "START":
-                            self.debounce_time = 30
+                            self.debounce_time = 5
                     elif isinstance(message, bytes):
                         transcriber.stream([message])
                 except Exception as e:
