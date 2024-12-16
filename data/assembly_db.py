@@ -4,6 +4,11 @@ import pandas as pd
 import os
 from openai import OpenAI
 import chromadb
+from tqdm import tqdm
+
+from dotenv import load_dotenv
+load_dotenv()
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 def format_to_sentence(text):
     # Replace hyphens and underscores with spaces
@@ -107,6 +112,6 @@ if __name__ == "__main__":
         assigner.load_SA_to_db(args.sa_path)
     # assigner.load_csv_to_db_ESC(args.csv_path)
     # Example word retrieval
-    test_word = "cow"
+    test_word = "cow mooing"
     filename, ids, score = assigner.retrieve_src_file(test_word)
     print(f"Closest match for '{test_word}': {ids} with score {score}")
