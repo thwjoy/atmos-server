@@ -104,7 +104,7 @@ class AudioServer:
         self.assigner_Music = shared_resources.assigner_Music
         self.client = shared_resources.openai
         self.sfx_score_threshold = 1.2
-        self.music_score_threshold = 1.5
+        self.music_score_threshold = 1e6
         self.narration_transcript = ""
         self.last_sfx_lock = asyncio.Lock()
         self.last_sfx = []
@@ -240,6 +240,13 @@ class AudioServer:
                             if 'transcript' in chunk.choices[0].delta.audio:
                                 transcript += chunk.choices[0].delta.audio['transcript']
 
+                    if self.music and not self.music_sent_event.is_set():
+                        self.music_sent_event.set()
+                        self.fire_and_forget(self.send_music_from_transcript(transcript, websocket))
+
+                    # if self.sfx:
+                    #     self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
+
                     # here would probably be a good place to send the music actually
                     self.narration_transcript += transcript
                     # self.last_narration_turn = ""
@@ -269,8 +276,8 @@ class AudioServer:
         #     self.music_sent_event.clear()
         #     return
         try:
-            transcript_insert = " ".join(self.transcript["transcript"][-10:]) + " " + transcript
-            filename, category, score = self.assigner_Music.retrieve_src_file(transcript_insert)
+            # transcript_insert = " ".join(self.transcript["transcript"][-10:]) + " " + transcript
+            filename, category, score = self.assigner_Music.retrieve_src_file(transcript)
             if score < self.music_score_threshold:
                 if filename:
                     logger.info(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
@@ -343,12 +350,12 @@ class AudioServer:
             # if len(self.narration_transcript) < 20: # TODO fix this
             #     self.narration_transcript += transcript.text
             #     return
-            if self.music and not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-                    self.music_sent_event.set()
-                    self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
+            # if self.music and not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
+            #         self.music_sent_event.set()
+            #         self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
 
-            if self.sfx:
-                self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
+            # if self.sfx:
+            #     self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
             
             if self.co_auth:
                 self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
