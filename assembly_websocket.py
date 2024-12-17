@@ -151,10 +151,6 @@ class AudioServer:
         else:
             answer_format = "tell me it's my turn and ask what should happen next?"
 
-        
-
-        print(p)
-
         chat = await self.client.chat.completions.create(
             model="gpt-4o-audio-preview",
             modalities=["text", "audio"],
