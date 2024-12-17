@@ -3,7 +3,10 @@ import asyncio
 import websockets
 import os
 import time
-
+import base64
+import uuid
+import struct
+import random
 
 
 import assemblyai as aai
@@ -18,7 +21,7 @@ from utils.session_utils import (is_rate_limited_ip, is_rate_limited_user,
                            DatabaseManager)
 
 from utils.logging_utils import configure_logging, set_user_id, set_session_id
-from utils.io_utils import send_audio_with_header, send_transcript_audio_with_header
+from utils.io_utils import send_audio_with_header, send_transcript_audio_with_header, HEADER_FORMAT, send_with_backpressure
 from data.assembly_db import SoundAssigner
 from dotenv import load_dotenv
 load_dotenv()
@@ -34,9 +37,6 @@ if not DEBUG:
     ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
 else:
     ssl_context = None
-
-
-
 
 class SharedResources:
     def __init__(self):
@@ -66,7 +66,7 @@ class AudioServer:
         self.assigner_Music = shared_resources.assigner_Music
         self.client = shared_resources.openai
         self.sfx_score_threshold = 1.2
-        self.music_score_threshold = 1.5
+        self.music_score_threshold = 1e6
         self.narration_transcript = ""
         self.last_sfx_lock = asyncio.Lock()
         self.last_sfx = []
@@ -102,73 +102,47 @@ class AudioServer:
 
     async def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
-        self.narration_transcript += transcript
-        # if self.session_start_time + (self.time_limit) < time.monotonic():
-        #     self.narration_transcript += "End the story quickly and do not ask any more questions, add 'The End' at the end."
-        #     self.trigger_disconnect = True
+        p = random.uniform(0.0, 1.0)
+        if p < 0.5:
+            answer_format = "give me two options about where the story should go."
+        else:
+            answer_format = "tell me it's my turn and ask what should happen next?"
+
         chat = await self.client.chat.completions.create(
             model="gpt-4o",
             modalities=["text"],
-            audio={"voice": "alloy", "format": "wav"},
             messages=[
                 {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
-                 and you will continue it. Once you have one sentence,
-                 you will ask me or give me options of where the story should go next.
-                 Keep your sections very very short to 1 or 2 sentence maximum.
-
+                 and you will continue it. Keep your sections to 2 or 3 sentence. 
+                 You should start your response with an acknowledgement of what I said and a summary, e.g. "Nice, <summary> or I like it <summary>.
+                 After you've finished {answer_format}.
                  The story is for children under 10, keep the language simple and the story fun.
-
-                 Do not repeat the story I have already written. You should make new words.
                  """
                  },
                 {
                     "role": "user",
-                    "content": self.narration_transcript
+                    "content": transcript
                 }
             ]
         )
-        # logger.debug(f"ChatGPT response: {chat.choices[0].message.content}")
-        # try get the literal
-        try:
-            response = chat.choices[0].message.content
-            # response = response.replace("“", "'").replace("”", "'")
-            # match = re.search(r"\[.*\]", response)
-            # if match:
-            #     text = match.group(0)
-                # Safely evaluate the array text as a Python literal
-                # array_literal = ast.literal_eval(array_text)
-            # else:
-            #     logger.warning("No array found in the text.")
-            #     text = "I didn't catch that, can you try again?".split(" ")
-                # array_literal = [(word, None) for word in response]
-        except:
-            text = "I didn't catch that, can you try again?".split(" ")
-            # array_literal = [(word, None) for word in response]
+        text = chat.choices[0].message.content
+        audio_response = self.get_next_story_audio_response(text)
+        return text, audio_response
 
-        
-        # words = [word for word, sound in array_literal if sound is None]
-        # sounds = [sound for word, sound in array_literal if sound is not None]
-        # logger.debug(f"Sounds: {sounds}")
-        # sentence = " ".join(words)
-        # logger.debug(f"Words: {words}")
-        # sounds = [sound for word, sound in chat.choices[0].message.content if sound is not None]
-        # sentence = chat.choices[0].message.content
-        # sounds = []
-        sentence = response
-
-        audio = await self.client.audio.speech.create(
+    async def get_next_story_audio_response(self, text):
+        """
+        Async generator that yields data chunks as they are received.
+        """
+        async with self.client.audio.speech.with_streaming_response.create(
             model="tts-1",
             voice="alloy",
             response_format="wav",
-            input=sentence,
-        )
-        logger.debug(f"Generated narration")
-        self.narration_transcript += " " + sentence
-        logger.info(f"Narration so far: {self.narration_transcript}")
-
-        return audio.content, sentence, None
-    
+            input=text,
+        ) as response:
+            async for data in response.iter_bytes(32 * 1024): # TODO look into this
+                yield data     # Yield data to the caller for further processing
+        
     async def send_audio_from_transcript(self, transcript, websocket):
         """Handles incoming transcript and sends audio after a 3-second pause."""
         # If ignoring transcripts, exit early
@@ -201,22 +175,39 @@ class AudioServer:
                     # Set the ignore flag to prevent new transcripts
                     self.ignore_transcripts = True
                     logger.info(f"Now starting narration after debounce.")
-                    
-                    # Process and send the narration
-                    await send_audio_with_header(websocket, './data/datasets/filler.wav', "FILL", 24000)
-                    # await websocket.send("Pause")
-                    audio, transcript, sounds = await self.get_next_story_section(self.last_narration_turn)
+                    sample_rate = 24000
+                    self.narration_transcript += f"\r\n{self.last_narration_turn}"
+                    transcript, audio_generator = await self.get_next_story_section(self.narration_transcript)
+
+                    count = 0
+                    sequence_id = uuid.uuid4().bytes
+                    ind = "STORY"[:5].ljust(5)  # Ensure the indicator is 5 bytes
+                    async for chunk in audio_generator:
+                        header = struct.pack(
+                            HEADER_FORMAT,       # Updated format
+                            ind.encode(),        # Indicator
+                            len(chunk),          # Size of this packet
+                            sequence_id,         # Unique sequence ID
+                            count,        # Packet count (sequence number)
+                            count + 1,       # Total packets
+                            sample_rate          # Sample rate
+                        )
+                        await send_with_backpressure(websocket, header + chunk)
+                        count += 1
+
+                    if self.music and not self.music_sent_event.is_set():
+                        self.music_sent_event.set()
+                        self.fire_and_forget(self.send_music_from_transcript(transcript, websocket))
+
+                    self.narration_transcript += f"\r\n{transcript}"
+                    self.insert_transcript_section(self.last_narration_turn, "", 0.0)
                     self.last_narration_turn = ""
-                    logger.info(f"Sending story snippet: {transcript}")
+                    logger.info(f"Sending story snippet")
                     self.insert_transcript_section(transcript, "", 0.0)
-                    await send_transcript_audio_with_header(websocket, audio, 24000)
                     await websocket.send("Play")
 
-                    # Reset the ignore flag after sending
-                    # await asyncio.sleep(3)
                     self.ignore_transcripts = False
-                    # if self.trigger_disconnect:
-                    #     await websocket.send("Disconnect")
+
 
         except asyncio.CancelledError:
             # Handle cancellation silently; new transcript triggered reset
@@ -234,8 +225,8 @@ class AudioServer:
         #     self.music_sent_event.clear()
         #     return
         try:
-            transcript_insert = " ".join(self.transcript["transcript"][-10:]) + " " + transcript
-            filename, category, score = self.assigner_Music.retrieve_src_file(transcript_insert)
+            # transcript_insert = " ".join(self.transcript["transcript"][-10:]) + " " + transcript
+            filename, category, score = self.assigner_Music.retrieve_src_file(transcript)
             if score < self.music_score_threshold:
                 if filename:
                     logger.info(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
@@ -308,12 +299,12 @@ class AudioServer:
             # if len(self.narration_transcript) < 20: # TODO fix this
             #     self.narration_transcript += transcript.text
             #     return
-            if self.music and not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-                    self.music_sent_event.set()
-                    self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
+            # if self.music and not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
+            #         self.music_sent_event.set()
+            #         self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
 
-            if self.sfx:
-                self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
+            # if self.sfx:
+            #     self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
             
             if self.co_auth:
                 self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
@@ -357,32 +348,17 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=2000
+                end_utterance_silence_threshold=500
             )
             # Start the connection
             transcriber.connect()
-
-            # try:
-            #     self.fire_and_forget(self.send_music_from_transcript("jungle", websocket))
-            # except Exception as e:
-            #     logger.error(f"Error sending files: {e}")
-
-            # await asyncio.sleep(5)
-
-            # try:
-            #     self.fire_and_forget(self.send_sfx_from_transcript("cow mooing", websocket))
-            # except Exception as e:
-            #     logger.error(f"Error sending files: {e}")
-            # set_session_id(self.session_id)
-
 
             try:
                 self.fire_and_forget(send_audio_with_header(websocket, "./data/datasets/intro_narration.wav", "STORY", 24000))
             except Exception as e:
                 logger.error(f"Error sending files: {e}")
 
-
-            # send the start file to 
+            # # send the start file to 
             while True:
                 try:
                     message = await websocket.recv()
@@ -390,7 +366,7 @@ class AudioServer:
                         if message == "STOP":
                             self.debounce_time = 2
                         if message == "START":
-                            self.debounce_time = 30
+                            self.debounce_time = 10
                     elif isinstance(message, bytes):
                         transcriber.stream([message])
                 except Exception as e:
