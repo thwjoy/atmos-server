@@ -146,11 +146,14 @@ class AudioServer:
         #     self.trigger_disconnect = True
 
         p = random.uniform(0.0, 1.0)
-        if p < 0.3:
-            answer_format = "give me options of where the story should go next."
+        if p < 0.5:
+            answer_format = "give me two options about where the story should go."
         else:
             answer_format = "tell me it's my turn and ask what should happen next?"
 
+        
+
+        print(p)
 
         chat = await self.client.chat.completions.create(
             model="gpt-4o-audio-preview",
@@ -160,13 +163,10 @@ class AudioServer:
             messages=[
                 {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
-                 and you will continue it.
-                 Keep your sections to 2 or 3 sentence.
-                 After you've finished {answer_format}
-                 
+                 and you will continue it. Keep your sections to 2 or 3 sentence. 
+                 You should start your response with an acknowledgement of what I said and a summary, e.g. "Nice, <summary> or I like it <summary>.
+                 After you've finished {answer_format}.
                  The story is for children under 10, keep the language simple and the story fun.
-
-                 Do not repeat the story I have already written. You should make new words.
                  """
                  },
                 {
@@ -213,6 +213,7 @@ class AudioServer:
                     # Process and send the narration
                     # await send_audio_with_header(websocket, './data/datasets/filler.wav', "FILL", sample_rate)
                     # await websocket.send("Pause")
+                    print(self.last_narration_turn)
                     completion = await self.get_next_story_section(self.last_narration_turn)
 
                     count = 0
@@ -243,7 +244,9 @@ class AudioServer:
                             if 'transcript' in chunk.choices[0].delta.audio:
                                 transcript += chunk.choices[0].delta.audio['transcript']
 
-                    self.last_narration_turn = ""
+                    # here would probably be a good place to send the music actually
+                    self.narration_transcript += transcript
+                    # self.last_narration_turn = ""
                     logger.info(f"Sending story snippet: {transcript}")
                     self.insert_transcript_section(transcript, "", 0.0)
                     await websocket.send("Play")
@@ -393,7 +396,7 @@ class AudioServer:
                 sample_rate=44_100,
                 on_open=lambda session: self.on_open(session, websocket, loop),
                 on_close=lambda : self.on_close(websocket), # why is this self?
-                end_utterance_silence_threshold=100
+                end_utterance_silence_threshold=500
             )
             # Start the connection
             transcriber.connect()
@@ -424,9 +427,9 @@ class AudioServer:
                     message = await websocket.recv()
                     if isinstance(message, str):
                         if message == "STOP":
-                            self.debounce_time = 1
+                            self.debounce_time = 2
                         if message == "START":
-                            self.debounce_time = 5
+                            self.debounce_time = 10
                     elif isinstance(message, bytes):
                         transcriber.stream([message])
                 except Exception as e:
