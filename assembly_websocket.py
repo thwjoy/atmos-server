@@ -103,7 +103,7 @@ class AudioServer:
     async def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
         p = random.uniform(0.0, 1.0)
-        if p < 0.5:
+        if p < 0.35:
             answer_format = "give me two options about where the story should go."
         else:
             answer_format = "tell me it's my turn and ask what should happen next?"
@@ -218,7 +218,13 @@ class AudioServer:
         self.transcript["sounds"].append(sounds),
         self.transcript["score"].append(score)
 
-    
+    async def play_music_periodically(self, websocket, filename, t):
+        while True:
+            await send_audio_with_header(websocket, os.path.join(filename), "MUSIC")
+            # Wait for 3 minutes (180 seconds) before sending again
+            await asyncio.sleep(t)
+
+
     async def send_music_from_transcript(self, transcript, websocket):
         # if len(self.transcript["transcript"]) < 3:
         #     self.insert_transcript_section(transcript, "", 0.0)
@@ -230,7 +236,7 @@ class AudioServer:
             if score < self.music_score_threshold:
                 if filename:
                     logger.info(f"Sending MUSIC track for category '{category}' to client with score: {score}.")
-                    await send_audio_with_header(websocket, os.path.join(filename), "MUSIC")
+                    self.fire_and_forget(self.play_music_periodically(websocket, filename, 180))
                 else:
                     logger.info("No MUSIC found for the given text.")
                     filename = ""
