@@ -7,7 +7,7 @@ import base64
 import uuid
 import struct
 import random
-
+import json
 
 import assemblyai as aai
 aai.settings.http_timeout = 30.0
@@ -105,21 +105,27 @@ class AudioServer:
                 model="gpt-4o-mini",
                 modalities=["text"],
                 messages=[
-                    {"role": "system", "content": f"""You are a helpful assistent.
+                    {"role": "system", "content": """You are a helpful assistent.
                     I will pass in a transcript of two people co-creating a story.
-                    I want you to neaten up the following text so that it reads like a complete story.
+                    Do not add anything to the story, you should only format it so that it sounds coherent to read.
+                    Please provide me a JSON like this {"name": "<story_name>", "story": <"story">}
                     """
                     },
                     {
                         "role": "user",
                         "content": transcript
                     }
-                ]
+                ],
+                response_format={"type": "json_object" },
             )
-            string = chat.choices[0].message.content
-        except:
-            string = transcript 
-        return string
+            event = json.loads(chat.choices[0].message.content)
+            name = event['name']
+            story = event['story']
+        except Exception as e:
+            print(f"Unable to summarise: {e}")
+            story = transcript
+            name = "Your Story"
+        return name, story
 
     async def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
@@ -361,8 +367,12 @@ class AudioServer:
                     logger.error(f"Closing: {e}")
                     break  # Exit the loop if an error occurs
         finally:
-            t = await self.neaten_story("\r\n".join(self.transcript["transcript"]))
-            # DO something with t
+            if len(self.transcript["transcript"]) > 0:
+                name, story = await self.neaten_story("\r\n".join(self.transcript["transcript"]))
+            db_manager.add_story(story_id=self.session_id,
+                                 user=self.user_id,
+                                 story=story,
+                                 story_name=name)
             try:
                 await asyncio.wait_for(asyncio.to_thread(transcriber.close), timeout=5) # TODO this is probably a bug... 
             except asyncio.TimeoutError:

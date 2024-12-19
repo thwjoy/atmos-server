@@ -111,21 +111,12 @@ class DatabaseManager:
             self.local.connection = sqlite3.connect(self.db_path)
         return self.local.connection
 
-class DatabaseManager:
-    def __init__(self, db_path="database.db"):
-        self.db_path = db_path
-        self.local = threading.local()  # Thread-local storage
-
-    def connect(self):
-        """Get a thread-local connection."""
-        if not hasattr(self.local, "connection"):
-            self.local.connection = sqlite3.connect(self.db_path)
-        return self.local.connection
-
     def initialize(self):
         """Create the merged table if it doesn't exist."""
         with self.connect() as conn:
             cursor = conn.cursor()
+
+            # Create sessions table
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS sessions (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -139,6 +130,18 @@ class DatabaseManager:
                     stop_time TEXT
                 )
             ''')
+
+            # Create stories table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS stories (
+                    id TEXT PRIMARY KEY,  -- UUID
+                    user TEXT NOT NULL,   -- User who created the story
+                    story_name TEXT NOT NULL, -- The name of the story
+                    story TEXT NOT NULL,  -- The story content
+                    visible BOOLEAN NOT NULL DEFAULT 1  -- Visibility flag
+                )
+            ''')
+
             conn.commit()
 
     def start_session(self, user_id):
@@ -172,3 +175,31 @@ class DatabaseManager:
                 (str(connection_id), json.dumps(data), co_auth, music, sfx, stop_time, record_id)
             )
             conn.commit()
+
+    def add_story(self, story_id, user, story_name, story, visible=True):
+        """Add a new story to the stories table."""
+        insert_query = """
+        INSERT INTO stories (id, user, story_name, story, visible)
+        VALUES (?, ?, ?, ?, ?);
+        """
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(insert_query, (str(story_id), user, story_name, story, visible))
+            conn.commit()
+
+    def get_stories(self, user, visible_only=True):
+        """Retrieve stories for a specific user, optionally filtering by visibility."""
+        if not user:
+            raise ValueError("User must be supplied to retrieve stories.")
+
+        query = "SELECT * FROM stories WHERE user = ?"
+        params = [user]
+
+        if visible_only:
+            query += " AND visible = 1"
+
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            return cursor.fetchall()
+    
