@@ -77,6 +77,7 @@ class AudioServer:
         self.ignore_transcripts = False 
         self.debounce_task = None
         self.debounce_time = 4
+        self.process_audio = asyncio.Event()
         self.time_limit = 30
         self.trigger_disconnect = False
         self.transcript = {
@@ -99,6 +100,28 @@ class AudioServer:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         logger.info(f"All tasks have been canceled and cleaned up.")
+
+    async def neaten_story(self, transcript):
+        try:
+            chat = await self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                modalities=["text"],
+                messages=[
+                    {"role": "system", "content": f"""You are a helpful assistent.
+                    I will pass in a transcript of two people co-creating a story.
+                    I want you to neaten up the following text so that it reads like a complete story.
+                    """
+                    },
+                    {
+                        "role": "user",
+                        "content": transcript
+                    }
+                ]
+            )
+            string = chat.choices[0].message.content
+        except:
+            string = transcript 
+        return string
 
     async def get_next_story_section(self, transcript):
         # use ChatGPT to generate the next section of the story
@@ -143,76 +166,6 @@ class AudioServer:
             async for data in response.iter_bytes(32 * 1024): # TODO look into this
                 yield data     # Yield data to the caller for further processing
         
-    async def send_audio_from_transcript(self, transcript, websocket):
-        """Handles incoming transcript and sends audio after a 3-second pause."""
-        # If ignoring transcripts, exit early
-        if self.ignore_transcripts:
-            logger.info("Ignoring incoming transcript due to ongoing narration.")
-            return
-
-        self.last_narration_turn += " " + transcript.strip()
-        current_time = time.monotonic()
-
-        async with self.last_narration_lock:
-            # Cancel any running debounce task
-            if self.debounce_task:
-                self.debounce_task.cancel()
-                try:
-                    await self.debounce_task
-                except asyncio.CancelledError:
-                    pass
-
-            # Start a new debounce task
-            self.debounce_task = asyncio.create_task(self._debounce_and_send(websocket))
-
-    async def _debounce_and_send(self, websocket):
-        """Debounce function that waits n seconds before sending narration."""
-        try:
-            await asyncio.sleep(self.debounce_time)  # Wait for the debounce duration
-
-            async with self.last_narration_lock:
-                if self.last_narration_turn.strip():
-                    # Set the ignore flag to prevent new transcripts
-                    self.ignore_transcripts = True
-                    logger.info(f"Now starting narration after debounce.")
-                    sample_rate = 24000
-                    self.narration_transcript += f"\r\n{self.last_narration_turn}"
-                    transcript, audio_generator = await self.get_next_story_section(self.narration_transcript)
-
-                    count = 0
-                    sequence_id = uuid.uuid4().bytes
-                    ind = "STORY"[:5].ljust(5)  # Ensure the indicator is 5 bytes
-                    async for chunk in audio_generator:
-                        header = struct.pack(
-                            HEADER_FORMAT,       # Updated format
-                            ind.encode(),        # Indicator
-                            len(chunk),          # Size of this packet
-                            sequence_id,         # Unique sequence ID
-                            count,        # Packet count (sequence number)
-                            count + 1,       # Total packets
-                            sample_rate          # Sample rate
-                        )
-                        await send_with_backpressure(websocket, header + chunk)
-                        count += 1
-
-                    if self.music and not self.music_sent_event.is_set():
-                        self.music_sent_event.set()
-                        self.fire_and_forget(self.send_music_from_transcript(transcript, websocket))
-
-                    self.narration_transcript += f"\r\n{transcript}"
-                    self.insert_transcript_section(self.last_narration_turn, "", 0.0)
-                    self.last_narration_turn = ""
-                    logger.info(f"Sending story snippet")
-                    self.insert_transcript_section(transcript, "", 0.0)
-                    await websocket.send("Play")
-
-                    self.ignore_transcripts = False
-
-
-        except asyncio.CancelledError:
-            # Handle cancellation silently; new transcript triggered reset
-            pass
-
     def insert_transcript_section(self, transcript, sounds, score):
         self.transcript["transcript"].append(transcript),
         self.transcript["sounds"].append(sounds),
@@ -297,30 +250,63 @@ class AudioServer:
         except Exception as e:
             logger.error(f"Unexpected error in send_sfx_from_transcript: {e}")
 
-    async def process_transcript_async(self, transcript, websocket):
-        if not transcript.text:
-            return
-        if isinstance(transcript, aai.RealtimeFinalTranscript):
-            logger.info(f"Recieved: {transcript.text}")
-            # if len(self.narration_transcript) < 20: # TODO fix this
-            #     self.narration_transcript += transcript.text
-            #     return
-            # if self.music and not self.music_sent_event.is_set(): # we need to accumulate messages until we have a good narrative
-            #         self.music_sent_event.set()
-            #         self.fire_and_forget(self.send_music_from_transcript(transcript.text, websocket))
+    async def send_audio_from_transcript(self, websocket):
 
-            # if self.sfx:
-            #     self.fire_and_forget(self.send_sfx_from_transcript(transcript.text, websocket))
+        try:
+            # Wait for the event with a timeout of 10 seconds
+            await asyncio.wait_for(self.process_audio.wait(), timeout=5.0)
+            logger.info("Event completed within the time limit.")
+        except asyncio.TimeoutError:
+            logger.info("Timeout reached! The event did not complete in time.")
+
+        sample_rate = 24000
+        self.narration_transcript += f"\r\n{self.last_narration_turn}"
+        transcript, audio_generator = await self.get_next_story_section(self.narration_transcript)
+
+        count = 0
+        sequence_id = uuid.uuid4().bytes
+        ind = "STORY"[:5].ljust(5)  # Ensure the indicator is 5 bytes
+        async for chunk in audio_generator:
+            header = struct.pack(
+                HEADER_FORMAT,       # Updated format
+                ind.encode(),        # Indicator
+                len(chunk),          # Size of this packet
+                sequence_id,         # Unique sequence ID
+                count,        # Packet count (sequence number)
+                count + 1,       # Total packets
+                sample_rate          # Sample rate
+            )
+            await send_with_backpressure(websocket, header + chunk)
+            count += 1
+
+        if self.music and not self.music_sent_event.is_set():
+            self.music_sent_event.set()
+            self.fire_and_forget(self.send_music_from_transcript(transcript, websocket))
+
+        self.narration_transcript += f"\r\n{transcript}"
+        self.insert_transcript_section(self.last_narration_turn, "", 0.0)
+        self.last_narration_turn = ""
+        logger.info(f"Sending story snippet")
+        self.insert_transcript_section(transcript, "", 0.0)
+        await websocket.send("Play")
+
+        self.ignore_transcripts = False
+
             
-            if self.co_auth:
-                self.fire_and_forget(self.send_audio_from_transcript(transcript.text, websocket))
-
     async def send_message_async(self, message, websocket):
         await asyncio.create_task(websocket.send(message))
         logger.info(f"Message sent: {message}")
 
     def on_data(self, transcript, websocket, loop):
-        asyncio.run_coroutine_threadsafe(self.process_transcript_async(transcript, websocket), loop)
+        if not transcript.text:
+            return
+        if isinstance(transcript, aai.RealtimeFinalTranscript):
+            logger.info(f"Recieved: {transcript.text}")
+            self.last_narration_turn += " " + transcript.text.strip()
+            self.process_audio.set()
+        elif isinstance(transcript, aai.RealtimePartialTranscript):
+            self.process_audio.clear()
+        # asyncio.run_coroutine_threadsafe(self.process_transcript_async(transcript, websocket), loop)
 
     def on_open(self, session, websocket, loop):
         set_user_id(self.user_id)
@@ -370,15 +356,15 @@ class AudioServer:
                     message = await websocket.recv()
                     if isinstance(message, str):
                         if message == "STOP":
-                            self.debounce_time = 2
-                        if message == "START":
-                            self.debounce_time = 10
+                            self.fire_and_forget(self.send_audio_from_transcript(websocket))
                     elif isinstance(message, bytes):
                         transcriber.stream([message])
                 except Exception as e:
                     logger.error(f"Closing: {e}")
                     break  # Exit the loop if an error occurs
         finally:
+            t = await self.neaten_story("\r\n".join(self.transcript["transcript"]))
+            # DO something with t
             try:
                 await asyncio.wait_for(asyncio.to_thread(transcriber.close), timeout=5) # TODO this is probably a bug... 
             except asyncio.TimeoutError:
@@ -459,7 +445,8 @@ class AudioServer:
             logger.error(f"Closing websocket: {e}")
         finally:
             await server_instance.close_all_tasks()
-            await websocket.close()
+            await websocket.close(code=1000, reason="Server shutting down gracefully")
+
 
 
     @staticmethod
