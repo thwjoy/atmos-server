@@ -14,6 +14,7 @@ aai.settings.http_timeout = 30.0
 from openai import AsyncOpenAI
 import numpy as np
 import ssl
+import argparse
 
 
 from utils.session_utils import (is_rate_limited_ip, is_rate_limited_user,
@@ -27,16 +28,13 @@ from dotenv import load_dotenv
 load_dotenv()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 SECRET_KEY = os.getenv("SECRET_KEY")
-DEBUG = False
 
-if not DEBUG:
-    certfile = "/root/.ssh/myatmos_pro_chain.crt"
-    keyfile = "/root/.ssh/myatmos.key"
+certfile = "/root/.ssh/myatmos_pro_chain.crt"
+keyfile = "/root/.ssh/myatmos.key"
 
-    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-    ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
-else:
-    ssl_context = None
+ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
+
 
 class SharedResources:
     def __init__(self):
@@ -456,14 +454,21 @@ class AudioServer:
             await asyncio.Future()  # Run forever
 
 # Server entry point
-def run():
-    asyncio.run(AudioServer.start_server())
+def run(port):
+    asyncio.run(AudioServer.start_server(port=port))
 
 
 # Run the server if the script is executed directly
 if __name__ == "__main__":
+    # Add argparse for port argument
+    parser = argparse.ArgumentParser(description="Run the server with a specified port.")
+    parser.add_argument("--port", type=int, default=8765, help="The port on which the server will run (default: 8000).")
+    
+    args = parser.parse_args()
+    port = args.port
+
     logger = configure_logging()
     # Create a global instance of DatabaseManager
     db_manager = DatabaseManager()
     db_manager.initialize()  # Ensure tables are created
-    run()
+    run(port)
