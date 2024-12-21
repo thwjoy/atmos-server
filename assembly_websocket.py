@@ -46,11 +46,12 @@ shared_resources = SharedResources()
 
 class AudioServer:
 
-    def __init__(self, user_id='-1', co_auth=False, music=False, sfx=False, host="0.0.0.0", port=8765):
+    def __init__(self, user_id='-1', co_auth=False, music=False, sfx=False, story_id=None, last_narration_turn="", host="0.0.0.0", port=8765):
         self.user_id = user_id
         self.db_session = db_manager.start_session(self.user_id)
         self.session_start_time = time.monotonic()
         self.session_id = '-1'
+        self.story_id = story_id
         self.co_auth = co_auth
         self.music = music
         self.sfx = sfx
@@ -69,7 +70,8 @@ class AudioServer:
         self.last_sfx_lock = asyncio.Lock()
         self.last_sfx = []
         self.last_sfx_time = 0
-        self.last_narration_turn = ""
+        self.resume_story = True if last_narration_turn else False
+        self.last_narration_turn = last_narration_turn if last_narration_turn else ""
         self.last_narration_time = 0
         self.last_narration_lock = asyncio.Lock()
         self.ignore_transcripts = False 
@@ -316,6 +318,7 @@ class AudioServer:
         set_user_id(self.user_id)
         logger.info(f"Transcriber session ID: {session.session_id}")
         self.session_id = session.session_id
+        self.story_id = self.session_id if not self.story_id else self.story_id
         set_session_id(session.session_id)
         asyncio.run_coroutine_threadsafe(self.send_message_async(str(session.session_id), websocket), loop)
     
@@ -349,10 +352,14 @@ class AudioServer:
             # Start the connection
             transcriber.connect()
 
-            try:
-                self.fire_and_forget(send_audio_with_header(websocket, "./data/datasets/intro_narration.wav", "STORY", 24000))
-            except Exception as e:
-                logger.error(f"Error sending files: {e}")
+            if not self.resume_story:
+                try:
+                    self.fire_and_forget(send_audio_with_header(websocket, "./data/datasets/intro_narration.wav", "STORY", 24000))
+                except Exception as e:
+                    logger.error(f"Error sending files: {e}")
+            else:
+                self.process_audio.set()
+                self.fire_and_forget(self.send_audio_from_transcript(websocket))
 
             # # send the start file to 
             while True:
@@ -369,10 +376,17 @@ class AudioServer:
         finally:
             if len(self.transcript["transcript"]) > 0:
                 name, story = await self.neaten_story("\r\n".join(self.transcript["transcript"]))
-            db_manager.add_story(story_id=self.session_id,
-                                 user=self.user_id,
-                                 story=story,
-                                 story_name=name)
+                if self.resume_story:
+                    db_manager.update_story(story_id=self.story_id,
+                                        user=self.user_id,
+                                        story=story,
+                                        story_name=name,
+                                        visible=1)
+                else:
+                    db_manager.add_story(story_id=self.story_id,
+                                        user=self.user_id,
+                                        story=story,
+                                        story_name=name)
             try:
                 await asyncio.wait_for(asyncio.to_thread(transcriber.close), timeout=5) # TODO this is probably a bug... 
             except asyncio.TimeoutError:
@@ -435,13 +449,30 @@ class AudioServer:
             await websocket.close(code=4003, reason=str(e))
             logger.warning(f"Connection rejected: {str(e)}")
             return
+
+        try:
+            story_id = websocket.request_headers.get("storyId", "")
+            story = db_manager.get_story(story_id, user_id)
+            if not story:
+                story = {
+                    'id': None,
+                    'story': None
+                }
+        except Exception as e:
+            logger.error(f"No story_id in header")
+            story = {
+                    'id': None,
+                    'story': None
+                }
         
         # Handle communication after successful authentication
         try:
             server_instance = AudioServer(user_name,
                                           co_auth=is_co_auth,
                                           music=is_music,
-                                          sfx=is_sfx)  # Create a new instance for each connection
+                                          sfx=is_sfx,
+                                          story_id=story['id'],
+                                          last_narration_turn=story['story'])  # Create a new instance for each connection
             await server_instance.audio_receiver(websocket)
         except websockets.ConnectionClosed as e:
             logger.error(f"Connection closed: {e}")

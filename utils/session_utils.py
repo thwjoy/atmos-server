@@ -202,4 +202,41 @@ class DatabaseManager:
             cursor = conn.cursor()
             cursor.execute(query, params)
             return cursor.fetchall()
+
+    def get_story(self, story_id, user):
+        """Retrieve a single story by story_id and user."""
+        query = """
+        SELECT id, user, story_name, story, visible
+        FROM stories
+        WHERE id = ? AND user = ?
+        """
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (story_id, user))
+            result = cursor.fetchone()
+
+        if result:
+            return {
+                "id": result[0],
+                "user": result[1],
+                "story_name": result[2],
+                "story": result[3],
+                "visible": bool(result[4]),
+            }
+        else:
+            return None
+
+    def update_story(self, story_id, user, story_name, story, visible):
+        """Update the story_name and story content for a specific story ID."""
+        update_query = """
+        UPDATE stories
+        SET story_name = ?, story = ?, visible = ?
+        WHERE id = ? AND user = ?
+        """
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(update_query, (story_name, story, visible, story_id, user))
+            if cursor.rowcount == 0:
+                raise ValueError("No story found with the given ID.")
+            conn.commit()
     
