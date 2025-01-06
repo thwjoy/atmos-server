@@ -56,7 +56,8 @@ def token_required(f):
 @token_required
 def get_stories():
     # Extract user_id from the request headers
-    user_id = request.user_id
+    user_id = request.headers.get("username")
+
 
     try:
         # Fetch stories for the user
@@ -88,7 +89,7 @@ def update_story(story_id):
         data = request.get_json()
 
         # Extract the fields to update
-        user = request.user_id  # Retrieved from the token by the token_required decorator
+        user = request.headers.get("username") # request.user_id  # Retrieved from the token by the token_required decorator
         story_name = data.get("story_name")
         story_content = data.get("story")
         visible = data.get("visible", True)
