@@ -35,6 +35,16 @@ keyfile = "/root/.ssh/myatmos.key"
 ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ssl_context.load_cert_chain(certfile=certfile, keyfile=keyfile)
 
+STORY_ARCS = """
+1) Stasis: The “normal world” before the story begins.
+2) Trigger/Inciting Incident: An event disrupts the status quo and sets the story in motion.
+3) The Quest: The protagonist begins their journey toward a goal or resolution.
+4) Surprise: Complications, twists, and smaller challenges along the way.
+5) Critical Choice: The protagonist faces a defining decision that impacts the outcome.
+6) Climax: The most intense or pivotal moment in the story.
+7) Resolution: The protagonist achieves or fails their goal, leading to a new stasis.
+"""
+
 
 class SharedResources:
     def __init__(self):
@@ -46,7 +56,8 @@ shared_resources = SharedResources()
 
 class AudioServer:
 
-    def __init__(self, user_id='-1', co_auth=False, music=False, sfx=False, story_id=None, last_narration_turn="", host="0.0.0.0", port=8765):
+    def __init__(self, user_id='-1', co_auth=False, music=False, sfx=False, story_id=None,
+                 arc_section=0, last_narration_turn="", host="0.0.0.0", port=8765):
         self.user_id = user_id
         self.db_session = db_manager.start_session(self.user_id)
         self.session_start_time = time.monotonic()
@@ -74,6 +85,7 @@ class AudioServer:
         self.last_narration_turn = last_narration_turn if last_narration_turn else ""
         self.last_narration_time = 0
         self.last_narration_lock = asyncio.Lock()
+        self.arc_number = arc_section
         self.ignore_transcripts = False 
         self.debounce_task = None
         self.debounce_time = 4
@@ -124,18 +136,21 @@ class AudioServer:
             name = event['name']
             story = event['story']
         except Exception as e:
-            print(f"Unable to summarise: {e}")
+            logger.warning(f"Unable to summarise: {e}")
             story = transcript
             name = "Your Story"
         return name, story
 
-    async def get_next_story_section(self, transcript):
+    async def get_next_story_section(self, transcript, arc_number):
         # use ChatGPT to generate the next section of the story
         p = random.uniform(0.0, 1.0)
         if p < 0.35:
             answer_format = "give me two options about where the story should go."
         else:
             answer_format = "tell me it's my turn and ask what should happen next?"
+
+        if arc_number == 7:
+            answer_format = "you should summarise the story and end the story without giving anymore options."
 
         chat = await self.client.chat.completions.create(
             model="gpt-4o",
@@ -144,9 +159,13 @@ class AudioServer:
                 {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
                  and you will continue it. Keep your sections to 2 or 3 sentence. 
-                 You should start your response with an acknowledgement of what I said and a summary, e.g. "Nice, <summary> or I like it <summary>.
+                 You should start your response with an acknowledgement of what I 
+                 said and a summary, e.g. "Nice, <summary> or I like it <summary>.
                  After you've finished {answer_format}.
-                 The story is for children under 10, keep the language simple and the story fun.
+                 The story is for children under 10, keep the language simple and 
+                 the story fun. You should try and guide the story according to 
+                 the story arc below:
+                 {STORY_ARCS}
                  """
                  },
                 {
@@ -171,6 +190,42 @@ class AudioServer:
         ) as response:
             async for data in response.iter_bytes(32 * 1024): # TODO look into this
                 yield data     # Yield data to the caller for further processing
+
+    async def analyse_story_arc(self, transcript):
+        try:
+            chat = await self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                modalities=["text"],
+                messages=[
+                    {"role": "system", "content": f"""You are a helpful assistent.
+
+                    I will pass you a transcript of two people co-creating a story.
+
+                    You need to decide at what part of the story arc the transcript it. Choose from the following
+                    
+                    Template of story arc: 
+                    <story_section_number>) arc_description
+                    {STORY_ARCS}
+
+                    The response should be in JSON format like this {{"story_section_number": "<story_section_number>", "arc_description": <"arc_description">}}
+                    """
+                    },
+                    {
+                        "role": "user",
+                        "content": transcript
+                    }
+                ],
+                response_format={"type": "json_object" },
+            )
+            event = json.loads(chat.choices[0].message.content)
+            number = event['story_section_number']
+            section = event['arc_description']
+        except Exception as e:
+            logger.warning(f"Unable to analyse story arc: {e}")
+            number = -1
+            section = "NA"
+        return number, section
+
         
     def insert_transcript_section(self, transcript, sounds, score):
         self.transcript["transcript"].append(transcript),
@@ -265,9 +320,25 @@ class AudioServer:
         except asyncio.TimeoutError:
             logger.info("Timeout reached! The event did not complete in time.")
 
-        sample_rate = 24000
         self.narration_transcript += f"\r\n{self.last_narration_turn}"
-        transcript, audio_generator = await self.get_next_story_section(self.narration_transcript)
+        arc_number, arc_desc = await self.analyse_story_arc(self.narration_transcript)
+        try:
+            arc_number = int(arc_number)
+            self.arc_number = arc_number if arc_number > self.arc_number else self.arc_number
+        except ValueError:
+            logger.error("Invalid conversion from st r to int in arc_number")    
+        await websocket.send(f"ARCNO: {self.arc_number}")
+
+        # if self.arc_number == 7:
+        #     try:
+        #         self.fire_and_forget(send_audio_with_header(websocket, "./data/datasets/finished_story.wav", "STORY", 24000))
+        #     except Exception as e:
+        #         logger.error(f"Error sending files: {e}")
+        #     finally:
+        #         return
+    
+        sample_rate = 24000
+        transcript, audio_generator = await self.get_next_story_section(self.narration_transcript, self.arc_number)
 
         count = 0
         sequence_id = uuid.uuid4().bytes
@@ -359,6 +430,7 @@ class AudioServer:
                     logger.error(f"Error sending files: {e}")
             else:
                 self.process_audio.set()
+                await websocket.send(f"ARCNO: {self.arc_number}")
                 self.fire_and_forget(self.send_audio_from_transcript(websocket))
 
             # # send the start file to 
@@ -380,13 +452,15 @@ class AudioServer:
                     db_manager.update_story(story_id=self.story_id,
                                         user=self.user_id,
                                         story=story,
-                                        story_name=name,
-                                        visible=1)
+                                        visible=1,
+                                        arc_section=self.arc_number)
                 else:
                     db_manager.add_story(story_id=self.story_id,
                                         user=self.user_id,
                                         story=story,
-                                        story_name=name)
+                                        story_name=name,
+                                        visible=1,
+                                        arc_section=self.arc_number)
             try:
                 await asyncio.wait_for(asyncio.to_thread(transcriber.close), timeout=5) # TODO this is probably a bug... 
             except asyncio.TimeoutError:
@@ -444,6 +518,7 @@ class AudioServer:
         # Validate the token asynchronously
         try:
             user_id = await validate_token(token)
+            user_id = user_name
             logger.info(f"Connection accepted for user {user_name}")  
         except TokenValidationError as e:
             await websocket.close(code=4003, reason=str(e))
@@ -456,13 +531,15 @@ class AudioServer:
             if not story:
                 story = {
                     'id': None,
-                    'story': None
+                    'story': None,
+                    'arc_section': 0,
                 }
         except Exception as e:
             logger.error(f"No story_id in header")
             story = {
                     'id': None,
-                    'story': None
+                    'story': None,
+                    'arc_section': 0,
                 }
         
         # Handle communication after successful authentication
@@ -472,7 +549,8 @@ class AudioServer:
                                           music=is_music,
                                           sfx=is_sfx,
                                           story_id=story['id'],
-                                          last_narration_turn=story['story'])  # Create a new instance for each connection
+                                          last_narration_turn=story['story'],
+                                          arc_section=story['arc_section'])  # Create a new instance for each connection
             await server_instance.audio_receiver(websocket)
         except websockets.ConnectionClosed as e:
             logger.error(f"Connection closed: {e}")
