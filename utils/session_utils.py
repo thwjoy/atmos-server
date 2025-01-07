@@ -6,6 +6,7 @@ import sqlite3
 import threading
 import time
 import jwt
+import uuid
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -138,7 +139,17 @@ class DatabaseManager:
                     user TEXT NOT NULL,   -- User who created the story
                     story_name TEXT NOT NULL, -- The name of the story
                     story TEXT NOT NULL,  -- The story content
-                    visible BOOLEAN NOT NULL DEFAULT 1  -- Visibility flag
+                    visible BOOLEAN NOT NULL DEFAULT 1,  -- Visibility flag
+                    arc_section INTEGER NOT NULL DEFAULT 0  -- Arc section from 0 to 7
+                )
+            ''')
+
+            # Create users table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    uuid TEXT PRIMARY KEY,            -- Unique UUID for each user
+                    contact_email TEXT NOT NULL UNIQUE, -- Unique email identifier
+                    streak INTEGER NOT NULL DEFAULT 0  -- Integer to store the points (default is 0)
                 )
             ''')
 
@@ -176,15 +187,44 @@ class DatabaseManager:
             )
             conn.commit()
 
-    def add_story(self, story_id, user, story_name, story, visible=True):
+    def add_story(self, story_id, user, story_name, story, visible=True, arc_section=0):
         """Add a new story to the stories table."""
         insert_query = """
-        INSERT INTO stories (id, user, story_name, story, visible)
-        VALUES (?, ?, ?, ?, ?);
+        INSERT INTO stories (id, user, story_name, story, visible, arc_section)
+        VALUES (?, ?, ?, ?, ?, ?);
         """
         with self.connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(insert_query, (str(story_id), user, story_name, story, visible))
+            cursor.execute(insert_query, (str(story_id), user, story_name, story, visible, arc_section))
+            conn.commit()
+
+    def update_story(self, story_id, user, story_name=None, story=None, visible=1, arc_section=0):
+        """Update the story_name, story content, visibility, and arc_section for a specific story ID."""
+        # Build the base query
+        update_query = "UPDATE stories SET "
+        params = []
+
+        # Add fields to update only if they are not None
+        if story_name is not None:
+            update_query += "story_name = ?, "
+            params.append(story_name)
+        if story is not None:
+            update_query += "story = ?, "
+            params.append(story)
+
+        # Remove the trailing comma and space
+        update_query = update_query.rstrip(", ")
+
+        # Add the WHERE clause
+        update_query += " WHERE id = ? AND user = ?"
+        params.extend([story_id, user])
+
+        # Execute the query
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(update_query, params)
+            if cursor.rowcount == 0:
+                raise ValueError("No story found with the given ID.")
             conn.commit()
 
     def get_stories(self, user, visible_only=True):
@@ -206,7 +246,7 @@ class DatabaseManager:
     def get_story(self, story_id, user):
         """Retrieve a single story by story_id and user."""
         query = """
-        SELECT id, user, story_name, story, visible
+        SELECT id, user, story_name, story, visible, arc_section
         FROM stories
         WHERE id = ? AND user = ?
         """
@@ -222,21 +262,69 @@ class DatabaseManager:
                 "story_name": result[2],
                 "story": result[3],
                 "visible": bool(result[4]),
+                "arc_section": result[5],
             }
         else:
             return None
 
-    def update_story(self, story_id, user, story_name, story, visible):
-        """Update the story_name and story content for a specific story ID."""
-        update_query = """
-        UPDATE stories
-        SET story_name = ?, story = ?, visible = ?
-        WHERE id = ? AND user = ?
+    def add_user(self, contact_email, streak=0):
+        """Add a new user to the users table."""
+        user_uuid = str(uuid.uuid4())  # Generate a new UUID
+        insert_query = """
+        INSERT INTO users (uuid, contact_email, streak)
+        VALUES (?, ?, ?);
         """
         with self.connect() as conn:
             cursor = conn.cursor()
-            cursor.execute(update_query, (story_name, story, visible, story_id, user))
+            try:
+                cursor.execute(insert_query, (user_uuid, contact_email, streak))
+                conn.commit()
+            except sqlite3.IntegrityError as e:
+                raise ValueError(f"Error adding user: {e}")
+
+    def get_user(self, contact_email):
+        """Retrieve a user's details by contact_email."""
+        query = "SELECT uuid, contact_email, streak FROM users WHERE contact_email = ?"
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (contact_email,))
+            result = cursor.fetchone()
+
+        if result:
+            return {
+                "uuid": result[0],  # Return the UUID as well
+                "contact_email": result[1],
+                "streak": result[2],
+            }
+        else:
+            return None
+
+    def update_streak(self, contact_email, points):
+        """Update a user's streak by adding points."""
+        update_query = """
+        UPDATE users
+        SET streak = streak + ?
+        WHERE contact_email = ?
+        """
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(update_query, (points, contact_email))
             if cursor.rowcount == 0:
-                raise ValueError("No story found with the given ID.")
+                raise ValueError("No user found with the given email.")
             conn.commit()
+
+    def reset_streak(self, contact_email):
+        """Reset a user's streak to 0."""
+        update_query = """
+        UPDATE users
+        SET streak = 0
+        WHERE contact_email = ?
+        """
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(update_query, (contact_email,))
+            if cursor.rowcount == 0:
+                raise ValueError("No user found with the given email.")
+            conn.commit()
+
     

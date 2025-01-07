@@ -108,6 +108,62 @@ def update_story(story_id):
     except Exception as e:
         return jsonify({"error": str(e)}), 500  # General server error
 
+@app.route('/stories/streak', methods=['GET'])
+def get_streak():
+    """
+    Fetch the streak for a specific user by contact_email from headers.
+    """
+    try:
+        # Get the contact_email from the request headers
+        contact_email = request.headers.get('username')  # 'username' header carries the email
+
+        if not contact_email:
+            return jsonify({"success": False, "error": "Username (email) header is required"}), 400
+
+        # Use the DatabaseManager to fetch the user
+        user = db_manager.get_user(contact_email)
+
+        if user:
+            return jsonify({
+                "success": True,
+                "contact_email": user["contact_email"],
+                "streak": user["streak"]
+            }), 200  # HTTP 200 OK
+        else:
+            return jsonify({
+                "success": False,
+                "error": "User not found"
+            }), 404  # HTTP 404 Not Found
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Unexpected error: {str(e)}"
+        }), 500  # HTTP 500 Internal Server Error
+
+@app.route('/stories/login', methods=['POST'])
+def login_or_register():
+    """
+    Check if the user exists. If not, register the user.
+    """
+    try:
+        data = request.get_json()
+        contact_email = data.get('contact_email')
+
+        if not contact_email:
+            return jsonify({"success": False, "error": "Email is required."}), 400
+
+        # Check if user exists
+        user = db_manager.get_user(contact_email)
+        if user:
+            # User already exists
+            return jsonify({"success": True, "message": "User logged in successfully."}), 200
+        else:
+            # Register new user
+            db_manager.add_user(contact_email=contact_email)
+            return jsonify({"success": True, "message": "User registered successfully."}), 200
+
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 500
 
 if __name__ == '__main__':
     # Run the server on HTTPS (you need to provide SSL certificates)

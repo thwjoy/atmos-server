@@ -86,6 +86,7 @@ class AudioServer:
         self.last_narration_time = 0
         self.last_narration_lock = asyncio.Lock()
         self.arc_number = arc_section
+        self.init_arc_number = arc_section
         self.ignore_transcripts = False 
         self.debounce_task = None
         self.debounce_time = 4
@@ -328,6 +329,8 @@ class AudioServer:
         except ValueError:
             logger.error("Invalid conversion from st r to int in arc_number")    
         await websocket.send(f"ARCNO: {self.arc_number}")
+        score = self.get_streak_score(self.init_arc_number, self.arc_number)
+        await websocket.send(f"Streak: {score}")
 
         # if self.arc_number == 7:
         #     try:
@@ -369,6 +372,40 @@ class AudioServer:
 
         self.ignore_transcripts = False
 
+    def get_streak_score(self, init_arc_number, arc_number):
+        """
+        Calculate the streak score based on how far the user has advanced in arc_number.
+
+        Parameters:
+        - init_arc_number (int): The starting arc number.
+        - arc_number (int): The current arc number.
+
+        Returns:
+        - int: The score based on the advancement.
+        """
+        if init_arc_number < 0 or init_arc_number > 7 or arc_number < 0 or arc_number > 7:
+            raise ValueError("arc_number and init_arc_number must be between 0 and 7")
+
+        if arc_number <= init_arc_number:
+            # No progress or regression
+            return 0
+
+        # Define the points for each incremental advance
+        arc_progression_points = {
+            1: 5,   # Points for advancing 1 arc
+            2: 10,  # Points for advancing 2 arcs
+            3: 15,  # Points for advancing 3 arcs
+            4: 20,  # Points for advancing 4 arcs
+            5: 30,  # Points for advancing 5 arcs
+            6: 45,  # Points for advancing 6 arcs
+            7: 80   # Points for advancing 7 arcs (full progress)
+        }
+
+        # Calculate how far the user has advanced
+        arc_progress = arc_number - init_arc_number
+
+        # Return the corresponding points based on progress
+        return arc_progression_points.get(arc_progress, 0)
             
     async def send_message_async(self, message, websocket):
         await asyncio.create_task(websocket.send(message))
@@ -378,14 +415,17 @@ class AudioServer:
         if not transcript.text:
             return
         if isinstance(transcript, aai.RealtimeFinalTranscript):
-            logger.info(f"Recieved: {transcript.text}")
+            logger.debug(f"Recieved: {transcript.text}")
             self.last_narration_turn += " " + transcript.text.strip()
             self.process_audio.set()
         elif isinstance(transcript, aai.RealtimePartialTranscript):
             self.process_audio.clear()
         # asyncio.run_coroutine_threadsafe(self.process_transcript_async(transcript, websocket), loop)
 
+
+
     def on_open(self, session, websocket, loop):
+
         set_user_id(self.user_id)
         logger.info(f"Transcriber session ID: {session.session_id}")
         self.session_id = session.session_id
@@ -447,6 +487,10 @@ class AudioServer:
                     break  # Exit the loop if an error occurs
         finally:
             if len(self.transcript["transcript"]) > 0:
+                score = self.get_streak_score(self.init_arc_number, self.arc_number)
+                db_manager.update_streak(contact_email=self.user_id,
+                                         points=score)
+
                 name, story = await self.neaten_story("\r\n".join(self.transcript["transcript"]))
                 if self.resume_story:
                     db_manager.update_story(story_id=self.story_id,
