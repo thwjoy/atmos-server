@@ -71,6 +71,7 @@ def get_stories():
                 "story_name": story[2],
                 "story": story[3],
                 "visible": bool(story[4]),
+                "arc_section": story[5]
             }
             for story in stories
         ]

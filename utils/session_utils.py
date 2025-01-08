@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 load_dotenv()
 SECRET_KEY = os.getenv("SECRET_KEY")
 
-RATE_LIMIT = 20  # Max 10 connections per IP/USER
+RATE_LIMIT = 60  # Max 10 connections per IP/USER
 RATE_LIMIT_WINDOW = 60  # In seconds
 SAMPLE_RATE = 44100
 
@@ -198,8 +198,18 @@ class DatabaseManager:
             cursor.execute(insert_query, (str(story_id), user, story_name, story, visible, arc_section))
             conn.commit()
 
-    def update_story(self, story_id, user, story_name=None, story=None, visible=1, arc_section=0):
-        """Update the story_name, story content, visibility, and arc_section for a specific story ID."""
+    def update_story(self, story_id, user, story_name=None, story=None, visible=None, arc_section=None):
+        """
+        Update the story_name, story content, visibility, and arc_section for a specific story ID.
+        
+        Parameters:
+            - story_id: The ID of the story to update.
+            - user: The user who owns the story.
+            - story_name: (Optional) The new name for the story.
+            - story: (Optional) The new content for the story.
+            - visible: (Optional) The visibility status (e.g., 1 for visible, 0 for hidden).
+            - arc_section: (Optional) The new arc section value.
+        """
         # Build the base query
         update_query = "UPDATE stories SET "
         params = []
@@ -211,6 +221,12 @@ class DatabaseManager:
         if story is not None:
             update_query += "story = ?, "
             params.append(story)
+        if visible is not None:
+            update_query += "visible = ?, "
+            params.append(visible)
+        if arc_section is not None:
+            update_query += "arc_section = ?, "
+            params.append(arc_section)
 
         # Remove the trailing comma and space
         update_query = update_query.rstrip(", ")
@@ -226,6 +242,7 @@ class DatabaseManager:
             if cursor.rowcount == 0:
                 raise ValueError("No story found with the given ID.")
             conn.commit()
+
 
     def get_stories(self, user, visible_only=True):
         """Retrieve stories for a specific user, optionally filtering by visibility."""
