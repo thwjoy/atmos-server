@@ -3,6 +3,7 @@ from datetime import datetime
 import json
 import os
 import sqlite3
+import sqlite_history
 import threading
 import time
 import jwt
@@ -131,6 +132,10 @@ class DatabaseManager:
                     stop_time TEXT
                 )
             ''')
+            try:
+                sqlite_history.configure_history(conn, "sessions")
+            except:
+                logger.debug("History already exisits")
 
             # Create stories table
             cursor.execute('''
@@ -143,6 +148,10 @@ class DatabaseManager:
                     arc_section INTEGER NOT NULL DEFAULT 0  -- Arc section from 0 to 7
                 )
             ''')
+            try:
+                sqlite_history.configure_history(conn, "stories")
+            except:
+                logger.debug("stories already exisits")
 
             # Create users table
             cursor.execute('''
@@ -152,6 +161,10 @@ class DatabaseManager:
                     streak INTEGER NOT NULL DEFAULT 0  -- Integer to store the points (default is 0)
                 )
             ''')
+            try:
+                sqlite_history.configure_history(conn, "users")
+            except:
+                logger.debug("users already exisits")
 
             conn.commit()
 
