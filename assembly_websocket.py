@@ -85,6 +85,8 @@ class AudioServer:
         self.last_narration_turn = last_narration_turn if last_narration_turn else ""
         self.last_narration_time = 0
         self.last_narration_lock = asyncio.Lock()
+        self.response_count = 0
+        self.last_arc_change = 0
         self.arc_number = arc_section
         self.init_arc_number = arc_section
         self.ignore_transcripts = False 
@@ -163,10 +165,15 @@ class AudioServer:
                  You should start your response with an acknowledgement of what I 
                  said and a summary, e.g. "Nice, <summary> or I like it <summary>.
                  After you've finished {answer_format}.
+
                  The story is for children under 10, keep the language simple and 
                  the story fun. You should try and guide the story according to 
                  the story arc below:
                  {STORY_ARCS}
+
+                 The story is currently at story arc {self.arc_number}, you should try 
+                 and move the story on to the next story arc, but don't force it. If they 
+                 ask you for help or say I want to move on, you should do this for them.
                  """
                  },
                 {
@@ -322,12 +329,21 @@ class AudioServer:
             logger.info("Timeout reached! The event did not complete in time.")
 
         self.narration_transcript += f"\r\n{self.last_narration_turn}"
+        self.response_count += 1
         arc_number, arc_desc = await self.analyse_story_arc(self.narration_transcript)
         try:
             arc_number = int(arc_number)
-            self.arc_number = arc_number if arc_number > self.arc_number else self.arc_number
         except ValueError:
-            logger.error("Invalid conversion from st r to int in arc_number")    
+            logger.error("Invalid conversion from st r to int in arc_number")
+
+        if arc_number > self.arc_number:
+            self.arc_number = arc_number
+            self.last_arc_change = self.response_count
+        elif self.last_arc_change + 2 < self.response_count:
+            print("Forcing move on")
+            self.arc_number = self.arc_number + 1 
+            self.last_arc_change = self.response_count
+
         await websocket.send(f"ARCNO: {self.arc_number}")
         score = self.get_streak_score(self.init_arc_number, self.arc_number)
         await websocket.send(f"Streak: {score}")
