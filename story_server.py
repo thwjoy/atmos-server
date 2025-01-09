@@ -141,6 +141,54 @@ def get_streak():
             "error": f"Unexpected error: {str(e)}"
         }), 500  # HTTP 500 Internal Server Error
 
+@app.route('/stories/streak', methods=['POST'])
+def update_streak():
+    """
+    Update the streak for a specific user by adding points.
+    """
+    try:
+        # Get the contact_email from the request headers
+        contact_email = request.headers.get('username')  # 'username' header carries the email
+
+        if not contact_email:
+            return jsonify({"success": False, "error": "Username (email) header is required"}), 400
+
+        # Parse the points from the request body
+        data = request.get_json()
+        if not data or 'points' not in data:
+            return jsonify({"success": False, "error": "Points are required"}), 400
+
+        points = data['points']
+
+        # Fetch the user
+        user = db_manager.get_user(contact_email)
+
+        if user:
+            # Update the streak in the database
+            db_manager.update_streak(contact_email, points)
+
+            # Fetch the updated user details
+            updated_user = db_manager.get_user(contact_email)
+
+            return jsonify({
+                "success": True,
+                "message": "Streak updated successfully.",
+                "contact_email": updated_user["contact_email"],
+                "streak": updated_user["streak"],
+                "points_earned": points
+            }), 200  # HTTP 200 OK
+        else:
+            return jsonify({
+                "success": False,
+                "error": "User not found"
+            }), 404  # HTTP 404 Not Found
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Unexpected error: {str(e)}"
+        }), 500  # HTTP 500 Internal Server Error
+
+
 @app.route('/stories/login', methods=['POST'])
 def login_or_register():
     """
