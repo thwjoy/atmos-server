@@ -167,12 +167,11 @@ class AudioServer:
                  After you've finished {answer_format}.
 
                  The story is for children under 10, keep the language simple and 
-                 the story fun. You should try and guide the story according to 
-                 the story arc below:
+                 the story fun, you should add lots of surprises, twists and turns. 
+                 You should try and guide the story according to the story arc below:
                  {STORY_ARCS}
 
-                 The story is currently at story arc {self.arc_number}, you should try 
-                 and move the story on to the next story arc, but don't force it. If they 
+                 The story is currently at story arc {self.arc_number}. If they 
                  ask you for help or say I want to move on, you should do this for them.
                  """
                  },
