@@ -8,6 +8,7 @@ import uuid
 import struct
 import random
 import json
+import ast
 
 import assemblyai as aai
 aai.settings.http_timeout = 30.0
@@ -15,6 +16,7 @@ from openai import AsyncOpenAI
 import numpy as np
 import ssl
 import argparse
+
 
 
 from utils.session_utils import (is_rate_limited_ip, is_rate_limited_user,
@@ -144,6 +146,33 @@ class AudioServer:
             name = "Your Story"
         return name, story
 
+    async def extract_characters(self, transcript, extract_characters):
+        try:
+            chat = await self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                modalities=["text"],
+                messages=[
+                    {"role": "system", "content": f"""You are a helpful assistent.
+                    I will pass in a transcript of a story. I want you to extract 
+                    the main characters in the story which are not in this list {extract_characters},
+                    you should also ignore background characters.
+                    Please provide me a JSON like this {{"name": "<list_of_characers>",
+                    "description": <"list_of_descriptions">}}
+                    """
+                    },
+                    {
+                        "role": "user",
+                        "content": transcript
+                    }
+                ],
+                response_format={"type": "json_object" },
+            )
+            event = json.loads(chat.choices[0].message.content)
+            return event
+        except Exception as e:
+            logger.warning(f"Unable to extract characters: {e}")
+            return {"name": [], "descripton": []}
+        
     async def get_next_story_section(self, transcript, arc_number):
         # use ChatGPT to generate the next section of the story
         p = random.uniform(0.0, 1.0)
@@ -161,13 +190,11 @@ class AudioServer:
             messages=[
                 {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
-                 and you will continue it. Keep your sections to 2 or 3 sentence. 
+                 and you will continue it. Keep your sections very short and to 1 or 2 sentences. 
                  You should start your response with a small acknowledgement of what I 
                  said, but then proceed to add new sections of the story and give me 
-                 lots of surprises. After you've finished {answer_format}.
+                 surprises. After you've finished {answer_format}. But it is very important 
 
-                 The story is for children under 10, keep the language simple and 
-                 the story fun, you should add lots of surprises, twists and turns. 
                  You should try and guide the story according to the story arc below:
                  {STORY_ARCS}
 
@@ -501,12 +528,24 @@ class AudioServer:
                     logger.error(f"Closing: {e}")
                     break  # Exit the loop if an error occurs
         finally:
-            if len(self.transcript["transcript"]) > 0:
+            if True: #len(self.transcript["transcript"]) > 0:
                 score = self.get_streak_score(self.init_arc_number, self.arc_number)
                 db_manager.update_streak(contact_email=self.user_id,
                                          points=score)
 
                 name, story = await self.neaten_story("\r\n".join(self.transcript["transcript"]))
+
+                existing_characters = db_manager.fetch_characters(owner_id=self.user_id)
+                existing_character_string = ", ".join([f"({c['name']}: {c['description']})" for c in existing_characters])
+
+                characters = await self.extract_characters(story, existing_character_string)
+                
+                import pdb; pdb.set_trace()
+                for name, desc in zip(characters["name"], characters["description"]):
+                    db_manager.save_character(name=name,
+                                              description=desc,
+                                              owner_id=self.user_id)
+
                 if self.resume_story:
                     db_manager.update_story(story_id=self.story_id,
                                         user=self.user_id,
