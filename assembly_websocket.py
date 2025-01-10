@@ -162,9 +162,9 @@ class AudioServer:
                 {"role": "system", "content": f"""You are a helpful assistent
                  who is going to make a story with me. I will start the story
                  and you will continue it. Keep your sections to 2 or 3 sentence. 
-                 You should start your response with an acknowledgement of what I 
-                 said and a summary, e.g. "Nice, <summary> or I like it <summary>.
-                 After you've finished {answer_format}.
+                 You should start your response with a small acknowledgement of what I 
+                 said, but then proceed to add new sections of the story and give me 
+                 lots of surprises. After you've finished {answer_format}.
 
                  The story is for children under 10, keep the language simple and 
                  the story fun, you should add lots of surprises, twists and turns. 
