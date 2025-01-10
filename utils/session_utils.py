@@ -409,7 +409,7 @@ class DatabaseManager:
             for row in results
         ]
 
-    def save_character(self, asset_id, name, description, owner_id, visible=True):
+    def save_character(self, name, description, owner_id, visible=True):
         """
         Save a new character to the assets table.
 
@@ -424,6 +424,7 @@ class DatabaseManager:
         INSERT INTO assets (id, name, description, owner_id, asset_class, visible)
         VALUES (?, ?, ?, ?, 'CHARACTER', ?)
         """
+        asset_id = uuid.uuid4()
         with self.connect() as conn:
             cursor = conn.cursor()
             cursor.execute(insert_query, (str(asset_id), name, description, owner_id, visible))
