@@ -214,6 +214,80 @@ def login_or_register():
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 500
 
+
+@app.route('/stories/characters', methods=['GET'])
+def get_characters():
+    """
+    Endpoint to fetch characters from the database.
+    Query Parameters:
+        - owner_id (required): The ID of the user owning the characters.
+        - visible_only (optional): Whether to filter by visibility (default is True).
+    """
+    try:
+        # Get query parameters
+        owner_id = request.args.get('owner_id')
+        if not owner_id:
+            return jsonify({"error": "owner_id is required"}), 400
+
+        visible_only = request.args.get('visible_only', 'true').lower() == 'true'
+
+        # Fetch characters from the database
+        characters = db_manager.fetch_characters(owner_id=owner_id, visible_only=visible_only)
+
+        # Return the characters as JSON
+        return jsonify(characters), 200
+
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+
+@app.route('/stories/characters', methods=['POST'])
+def add_character():
+    """
+    Endpoint to add a new character.
+    Expects a JSON payload with the following fields:
+        - id (string, required): The unique ID for the character (UUID).
+        - name (string, required): The name of the character.
+        - description (string, required): The description of the character.
+        - owner_id (string, required): The ID of the user who owns the character.
+        - visible (boolean, optional): Whether the character is visible (default is True).
+    """
+    try:
+        # Parse the JSON payload
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        # Validate required fields
+        required_fields = ["id", "name", "description", "owner_id"]
+        missing_fields = [field for field in required_fields if field not in data]
+        if missing_fields:
+            return jsonify({"error": f"Missing required fields: {', '.join(missing_fields)}"}), 400
+
+        # Extract data
+        character_id = data["id"]
+        name = data["name"]
+        description = data["description"]
+        owner_id = data["owner_id"]
+        visible = data.get("visible", True)  # Default to True if not provided
+
+        # Save the character to the database
+        db_manager.save_character(
+            asset_id=character_id,
+            name=name,
+            description=description,
+            owner_id=owner_id,
+            visible=visible
+        )
+
+        return jsonify({"success": True, "message": "Character created successfully"}), 201
+
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+
 if __name__ == '__main__':
     # Run the server on HTTPS (you need to provide SSL certificates)
     app.run(host='0.0.0.0', port=5000, ssl_context=ssl_context)

@@ -166,6 +166,22 @@ class DatabaseManager:
             except:
                 logger.debug("users already exisits")
 
+            # Create assets table
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS assets (
+                    id TEXT PRIMARY KEY,             -- UUID
+                    name TEXT NOT NULL,              -- Name of the asset
+                    description TEXT NOT NULL,       -- Description of the asset
+                    owner_id TEXT NOT NULL,          -- The owner of the asset
+                    asset_class TEXT NOT NULL,       -- The class of the asset (CHARACTER, OBJECT, STORY)
+                    visible BOOLEAN NOT NULL DEFAULT 1 -- Visibility flag
+                )
+            ''')
+            try:
+                sqlite_history.configure_history(conn, "assets")
+            except:
+                logger.debug("Assets history already exists.")
+
             conn.commit()
 
     def start_session(self, user_id):
@@ -357,4 +373,100 @@ class DatabaseManager:
                 raise ValueError("No user found with the given email.")
             conn.commit()
 
-    
+    def fetch_characters(self, owner_id, visible_only=True):
+        """
+        Fetch characters for a specific owner.
+
+        Parameters:
+            - owner_id: The ID of the user who owns the characters.
+            - visible_only: Whether to filter by visibility (default is True).
+
+        Returns:
+            - A list of dictionaries containing character details.
+        """
+        if not owner_id:
+            raise ValueError("Owner ID is required to fetch characters.")
+
+        query = "SELECT id, name, description, owner_id, visible FROM assets WHERE asset_class = 'CHARACTER' AND owner_id = ?"
+        params = [owner_id]
+
+        if visible_only:
+            query += " AND visible = 1"
+
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, params)
+            results = cursor.fetchall()
+
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "description": row[2],
+                "owner_id": row[3],
+                "visible": bool(row[4]),
+            }
+            for row in results
+        ]
+
+    def save_character(self, asset_id, name, description, owner_id, visible=True):
+        """
+        Save a new character to the assets table.
+
+        Parameters:
+            - asset_id: The unique ID of the character.
+            - name: The name of the character.
+            - description: A brief description of the character.
+            - owner_id: The ID of the user who owns the character.
+            - visible: The visibility flag (default is True).
+        """
+        insert_query = """
+        INSERT INTO assets (id, name, description, owner_id, asset_class, visible)
+        VALUES (?, ?, ?, ?, 'CHARACTER', ?)
+        """
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(insert_query, (str(asset_id), name, description, owner_id, visible))
+            conn.commit()
+
+    def update_character(self, asset_id, name=None, description=None, visible=None):
+        """
+        Update the details of a character.
+
+        Parameters:
+            - asset_id: The unique ID of the character to update.
+            - name: (Optional) The new name of the character.
+            - description: (Optional) The new description of the character.
+            - visible: (Optional) The new visibility status.
+        """
+        if not asset_id:
+            raise ValueError("Asset ID is required to update a character.")
+
+        update_query = "UPDATE assets SET "
+        params = []
+
+        if name is not None:
+            update_query += "name = ?, "
+            params.append(name)
+        if description is not None:
+            update_query += "description = ?, "
+            params.append(description)
+        if visible is not None:
+            update_query += "visible = ?, "
+            params.append(visible)
+
+        # Remove the trailing comma and space
+        update_query = update_query.rstrip(", ")
+
+        # Add WHERE clause
+        update_query += " WHERE id = ? AND asset_class = 'CHARACTER'"
+        params.append(asset_id)
+
+        with self.connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(update_query, params)
+            if cursor.rowcount == 0:
+                raise ValueError("No character found with the given ID.")
+            conn.commit()
+
+
