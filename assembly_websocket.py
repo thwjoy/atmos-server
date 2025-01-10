@@ -149,20 +149,22 @@ class AudioServer:
     async def extract_characters(self, transcript, extract_characters):
         try:
             chat = await self.client.chat.completions.create(
-                model="gpt-4o-mini",
+                model="gpt-4o",
                 modalities=["text"],
                 messages=[
                     {"role": "system", "content": f"""You are a helpful assistent.
-                    I will pass in a transcript of a story. I want you to extract 
-                    the main characters in the story which are not in this list {extract_characters},
-                    you should also ignore background characters.
                     Please provide me a JSON like this {{"name": "<list_of_characers>",
                     "description": <"list_of_descriptions">}}
                     """
                     },
                     {
                         "role": "user",
-                        "content": transcript
+                        "content":  f"""I want you to tell me which characters in this story:
+                        
+                        {transcript}
+
+                        Are not in this list {extract_characters}. 
+                        You should ignore background characters."""
                     }
                 ],
                 response_format={"type": "json_object" },
@@ -528,7 +530,7 @@ class AudioServer:
                     logger.error(f"Closing: {e}")
                     break  # Exit the loop if an error occurs
         finally:
-            if True: #len(self.transcript["transcript"]) > 0:
+            if len(self.transcript["transcript"]) > 0:
                 score = self.get_streak_score(self.init_arc_number, self.arc_number)
                 db_manager.update_streak(contact_email=self.user_id,
                                          points=score)
@@ -540,7 +542,6 @@ class AudioServer:
 
                 characters = await self.extract_characters(story, existing_character_string)
                 
-                import pdb; pdb.set_trace()
                 for name, desc in zip(characters["name"], characters["description"]):
                     db_manager.save_character(name=name,
                                               description=desc,
