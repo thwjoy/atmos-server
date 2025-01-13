@@ -15,7 +15,7 @@ message_queue = asyncio.Queue()
 
 # WebSocket server URL
 SERVER_URI = "ws://localhost:5001"  # Replace <server_ip> with your server's IP
-TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJleHAiOjE3MzMwNjg5NzksImlhdCI6MTczMjIwNDk3OSwiaXNzIjoieW91ci1hcHAtbmFtZSJ9.irNjsFJSjdxWqfRZqHclf4Pb78-hNIYTr9PRuZJYtQ8"
+TOKEN = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VyX2lkIjoxLCJleHAiOjE3MzM5OTg0NzQsImlhdCI6MTczMzEzNDQ3NCwiaXNzIjoieW91ci1hcHAtbmFtZSJ9.zixGVfYfQ5TckItrklCWunR5IOCF793gkQ9ciFsdLJA"
 
 # Audio stream settings
 SAMPLE_RATE = 44100
