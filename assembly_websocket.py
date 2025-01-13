@@ -202,24 +202,19 @@ class AudioServer:
             modalities=["text"],
             messages=[
                 {"role": "system", "content": f"""You are a helpful assistent
-                 who is going to make a story with me. I will start the story
-                 and you will continue it. You should start your response with 
-                 a small acknowledgement of what I said, but then proceed to 
-                 add new sections of the story and give me lots of surprises,
-                 twists and turns. Keep your responses to 3 or 4 sentences.
-                 After you've finished {answer_format}.
+                 who is going to make a story with me. Based on how engaged I am,
+                 you should either give me lots of support by giving me options on
+                 where the story should go, or if I'm saying a lot, you should
+                 only give detail for what I have said.
+                        
                  The story is for children under 10, keep the language simple and 
-                 the story fun, let your imagination run wild with fantasy.
-                 
-                 You should try and guide the story according to the story arc below:
-                 {STORY_ARCS}
-                 The story is currently at story arc {self.arc_number}. If they 
-                 ask you for help or say I want to move on, you should do this for them.
+                 the story fun, let your imagination run wild with fantasy. If I ask 
+                 for help you should help me and give me options.
                  """
                  },
-                {
+                { 
                     "role": "user",
-                    "content": transcript
+                    "content": f"This is a copy of our transcript: {transcript}"
                 }
             ]
         )
@@ -381,7 +376,6 @@ class AudioServer:
             self.arc_number = arc_number
             self.last_arc_change = self.response_count
         elif self.last_arc_change + 2 < self.response_count:
-            print("Forcing move on")
             self.arc_number = self.arc_number + 1 
             self.last_arc_change = self.response_count
 
@@ -415,6 +409,18 @@ class AudioServer:
             )
             await send_with_backpressure(websocket, header + chunk)
             count += 1
+
+        # indicate end of sequence
+        header = struct.pack(
+            HEADER_FORMAT,       # Updated format
+            ind.encode(),        # Indicator
+            0,          # Size of this packet
+            sequence_id,         # Unique sequence ID
+            count,        # Packet count (sequence number)
+            count,       # Total packets
+            sample_rate          # Sample rate
+        )
+        await send_with_backpressure(websocket, header)
 
         if self.music and not self.music_sent_event.is_set():
             self.music_sent_event.set()
