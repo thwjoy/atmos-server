@@ -57,7 +57,7 @@ async def send_with_backpressure(websocket, data, buffer_limit=10_000_000):
     else:
         raise RuntimeError("WebSocket transport is not available. Connection might be closed.")
 
-async def send_audio_with_header(websocket, audio_path, indicator, sample_rate=44100, chunk_size=1024 * 512):
+async def send_audio_with_header(websocket, audio_path, indicator, sample_rate=44100, chunk_size=8 * 1024):
     """Send audio in chunks with header containing packet size, packet count, sample rate, and unique sequence ID."""
     if not os.path.exists(audio_path):
         raise FileNotFoundError(f"File not found: {audio_path}")

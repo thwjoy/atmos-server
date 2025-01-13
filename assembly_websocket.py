@@ -237,7 +237,7 @@ class AudioServer:
             response_format="wav",
             input=text,
         ) as response:
-            async for data in response.iter_bytes(32 * 1024): # TODO look into this
+            async for data in response.iter_bytes(8 * 1024): # TODO look into this
                 yield data     # Yield data to the caller for further processing
 
     async def analyse_story_arc(self, transcript):
