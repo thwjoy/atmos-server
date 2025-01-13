@@ -288,6 +288,27 @@ def add_character():
     except Exception as e:
         return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
 
+
+@app.route('/stories/characters/<string:character_id>', methods=['PUT'])
+def delete_character(character_id):
+    """
+    Endpoint to "delete" a character by setting its visibility to 0.
+    Path Parameters:
+        - character_id (string, required): The unique ID of the character to delete.
+    """
+    try:
+        # Update the visibility of the character to 0
+
+        db_manager.update_character(asset_id=character_id.lower(), visible=0)
+
+        return jsonify({"success": True, "message": "Character visibility updated to 0"}), 200
+
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404  # Character not found or invalid input
+    except Exception as e:
+        return jsonify({"error": "An unexpected error occurred", "details": str(e)}), 500
+
+
 if __name__ == '__main__':
     # Run the server on HTTPS (you need to provide SSL certificates)
     app.run(host='0.0.0.0', port=5000, ssl_context=ssl_context)
