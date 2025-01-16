@@ -51,15 +51,17 @@ STORY_LAYOUT = {
     {
       "name": "Conquer the Wailing Swamp",
       "dependencies": ["Moonlit Sigil"],
-      "reward": "Fangstone Amulet and Swampfire Essence",
+      "reward": "Fangstone Amulet",
       "tasks": [
         {
           "task": "Secure safe passage through the Bog of Sinking Souls",
-          "details": "Build makeshift bridges or tame a swamp beast to cross safely.",
+          "details": "Build makeshift bridges to cross safely.",
           "coinsCollected": 60,
           "completionObjective": {
             "type": "simple-action",
-            "description": "Think about how to build a safe crossing using the resources around you!"
+            "description": "Think about how to build a safe crossing using the resources around you!",
+            "answer": "Use the axe to chop down the tree and cross the bog.",
+            "educationalHint": "There is a stone axe hidden in a bush."
           }
         },
         {
@@ -88,7 +90,7 @@ STORY_LAYOUT = {
     },
     {
       "name": "Survive the Obsidian Wastes",
-      "dependencies": ["Fangstone Amulet", "Swampfire Essence"],
+      "dependencies": ["Fangstone Amulet"],
       "reward": "Radiant Ore",
       "tasks": [
         {
@@ -167,111 +169,63 @@ STORY_LAYOUT = {
       ]
     }
   ],
-  "optionalChallenges": [
-    {
-      "name": "Rescue the Lost Explorer",
-      "dependencies": ["Path of Echoes"],
-      "reward": "Valuable information about the shard's location",
-      "tasks": [
-        {
-          "task": "Find the Lost Explorer",
-          "details": "Track their location within the Mistwood Veil.",
-          "coinsCollected": 30,
-          "completionObjective": {
-            "type": "direction",
-            "question": "The explorer left tracks leading North, East, or South. Which way did they go?",
-            "answer": "North",
-            "educationalHint": "Look at the compass directions for guidance!"
-          }
-        },
-        {
-          "task": "Free them from entangling magic",
-          "details": "Use knowledge from the Elder Willow to dispel the enchantment.",
-          "coinsCollected": 50,
-          "completionObjective": {
-            "type": "spell",
-            "question": "To break the spell, chant: 'Light as air, strong as ___. Fill the blank.'",
-            "answer": "stone",
-            "educationalHint": "Think of something strong and solid like stone!"
-          }
-        }
-      ]
-    }
-  ]
+  # "optionalChallenges": [
+  #   {
+  #     "name": "Rescue the Lost Explorer",
+  #     "dependencies": ["Path of Echoes"],
+  #     "reward": "Valuable information about the shard's location",
+  #     "tasks": [
+  #       {
+  #         "task": "Find the Lost Explorer",
+  #         "details": "Track their location within the Mistwood Veil.",
+  #         "coinsCollected": 30,
+  #         "completionObjective": {
+  #           "type": "direction",
+  #           "question": "The explorer left tracks leading North, East, or South. Which way did they go?",
+  #           "answer": "North",
+  #           "educationalHint": "Look at the compass directions for guidance!"
+  #         }
+  #       },
+  #       {
+  #         "task": "Free them from entangling magic",
+  #         "details": "Use knowledge from the Elder Willow to dispel the enchantment.",
+  #         "coinsCollected": 50,
+  #         "completionObjective": {
+  #           "type": "spell",
+  #           "question": "To break the spell, chant: 'Light as air, strong as ___. Fill the blank.'",
+  #           "answer": "stone",
+  #           "educationalHint": "Think of something strong and solid like stone!"
+  #         }
+  #       }
+  #     ]
+  #   }
+  # ]
 }
-
+ 
 
 STORY_PROGRESS = {
-   "objectives": [
-    {
-      "name": "Navigate the Mistwood Veil",
-      "dependencies": [],
-      "reward": "Moonlit Sigil",
-      "tasks": [
+    "objectives": [
         {
-          "task": "Discover the Path of Echoes",
-          "details": "Locate the hidden trail through the forest by deciphering ancient runes.",
-          "coinsCollected": 50,
-          "completed": False,
-          "completionObjective": {
-            "type": "direction",
-            "question": "You are in a forest. The sun sets in the West. Which way is North?",
-            "answer": "",
-            "educationalHint": "Use the position of the sun to figure out directions."
-          }
+            "name": "Navigate the Mistwood Veil",
+            "tasks": [
+                {
+                    "task": "Discover the Path of Echoes",
+                    "details": "Locate the hidden trail through the forest by deciphering ancient runes.",
+                    "completed": False,
+                },
+                {
+                    "task": "Solve the Elder Willow's riddles",
+                    "details": "Answer three riddles to gain the forest's secrets.",
+                    "completed": False,
+                },
+                {
+                    "task": "Defeat the Whispering Shades",
+                    "details": "Combat ghostly apparitions to claim the Moonlit Sigil.",
+                    "completed": False,
+                }
+            ]
         },
-        {
-          "task": "Solve the Elder Willow's riddles",
-          "details": "Answer three riddles to gain the forest's secrets.",
-          "coinsCollected": 75,
-          "completed": False,
-          "completionObjective": {
-            "type": "riddle",
-            "question": "What is full of holes but still holds water?",
-            "answer": "",
-            "educationalHint": "Think of something you use to clean up messes!"
-          }
-        },
-        {
-          "task": "Defeat the Whispering Shades",
-          "details": "Combat ghostly apparitions to claim the Moonlit Sigil.",
-          "coinsCollected": 100,
-          "completed": False,
-          "completionObjective": {
-            "type": "choice",
-            "question": "The Whispering Shades are coming! Should you: A) Hide, B) Run, C) Shout loudly to scare them away?",
-            "answer": "",
-            "educationalHint": "Sometimes making noise can surprise and scare others!"
-          }
-        }
-      ]
-    },
-  ],
-}
-
-STORY_PROGRESS = {
-   "objectives": [
-    {
-      "name": "Navigate the Mistwood Veil",
-      "tasks": [
-        {
-          "task": "Discover the Path of Echoes",
-          "details": "Locate the hidden trail through the forest by deciphering ancient runes.",
-          "completed": False,
-        },
-        {
-          "task": "Solve the Elder Willow's riddles",
-          "details": "Answer three riddles to gain the forest's secrets.",
-          "completed": False,
-        },
-        {
-          "task": "Defeat the Whispering Shades",
-          "details": "Combat ghostly apparitions to claim the Moonlit Sigil.",
-          "completed": False,
-        }
-      ]
-    },
-  ],
+    ]
 }
 
 TOTAL_COINS = 0 
@@ -288,27 +242,6 @@ def show_map(input_text: str) -> str:
 def check_coins(input_text: str) -> str:
     """ Returns the amount of coins a user has """
     return str(TOTAL_COINS)
-
-# @tool
-# def get_incomplete_tasks(story_progress):
-#   """
-#   Find and return all tasks that are not completed.
-
-#   Args:
-#       story_progress (dict): A dictionary containing story objectives and tasks.
-
-#   Returns:
-#       list: A list of tasks (with details) that are not completed.
-#   """
-#   incomplete_tasks = []
-
-#   # Loop through objectives in the story progress
-#   for objective in story_progress.get("objectives", []):
-#       for task in objective.get("tasks", []):
-#           if not task.get("completed"):  # Check if the task is incomplete
-#               incomplete_tasks.append(task)
-
-#   return incomplete_tasks
 
 @tool
 def get_task(task_name: str) -> str:
@@ -331,20 +264,24 @@ def get_task(task_name: str) -> str:
 
 
 @tool
-def set_task_completion_status(task_name: str, status: str) -> None:
+def set_task_completion_status(task_name: str, status: str) -> str:
     """
-    Updates the completion status of a task in STORY_PROGRESS and retrieves coins from STORY_LAYOUT.
+    Updates the completion status of a task in STORY_PROGRESS, retrieves coins from STORY_LAYOUT,
+    and unlocks the next objective if all tasks in the current objective are completed.
 
     Args:
         task_name (str): The name of the task to search for.
         status (str): The completion status to set, expected values are "true" or "false".
+
+    Returns:
+        str: A new artifact (reward) added to the inventory, or None if no reward.
     """
     # Convert string status to boolean
     status_value = status.lower() == "true"
 
-    global TOTAL_COINS
+    global TOTAL_COINS, ITEMS
 
-    # Retrieve coinsCollected from STORY_LAYOUT
+    # Retrieve coins from STORY_LAYOUT
     coins_to_add = 0
     for section in ["objectives", "optionalChallenges"]:
         for objective in STORY_LAYOUT.get(section, []):
@@ -361,6 +298,62 @@ def set_task_completion_status(task_name: str, status: str) -> None:
                     task["completed"] = status_value
                     if status_value:  # If the task is marked as completed
                         TOTAL_COINS += coins_to_add
+
+                    # Check if all tasks in this objective are completed
+                    all_tasks_completed = all(t["completed"] for t in objective.get("tasks", []))
+                    if all_tasks_completed:
+                        # Fetch the reward from the corresponding objective in STORY_LAYOUT
+                        reward = None
+                        for layout_objective in STORY_LAYOUT.get(section, []):
+                            if layout_objective["name"] == objective["name"]:
+                                reward = layout_objective.get("reward")
+                                break
+                                                
+                        if reward:
+                            ITEMS.append(reward)
+
+                        # Unlock the next objective
+                        unlock_next_objective(objective["name"])               
+                        return reward
+
+    return None
+
+
+def unlock_next_objective(current_objective_name: str):
+    """
+    Unlocks the next objective in STORY_LAYOUT and adds it to STORY_PROGRESS if dependencies are met.
+
+    Args:
+        current_objective_name (str): The name of the current objective.
+    """
+    for i, layout_objective in enumerate(STORY_LAYOUT["objectives"]):
+        if layout_objective["name"] == current_objective_name:
+            # Check if there is a next objective
+            if i + 1 < len(STORY_LAYOUT["objectives"]):
+                next_objective = STORY_LAYOUT["objectives"][i + 1]
+
+                # Check if dependencies are met
+                dependencies_met = all(
+                    dep in ITEMS for dep in next_objective.get("dependencies", [])
+                )
+
+                if dependencies_met:
+                    # Add the next objective to STORY_PROGRESS
+                    STORY_PROGRESS["objectives"].append({
+                        "name": next_objective["name"],
+                        "dependencies": next_objective.get("dependencies", []),
+                        "reward": next_objective["reward"],
+                        "tasks": [
+                            {
+                                "task": task["task"],
+                                "details": task["details"],
+                                "completed": False,
+                                "coinsCollected": task["coinsCollected"],
+                                "completionObjective": task["completionObjective"],
+                            }
+                            for task in next_objective.get("tasks", [])
+                        ],
+                    })
 
 tools = [show_map, check_coins, get_task, set_task_completion_status]
 
