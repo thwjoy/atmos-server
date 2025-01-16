@@ -235,7 +235,8 @@ ITEMS = []
 
 @tool
 def show_map(input_text: str) -> str:
-  """ Returns the total story progress so far """
+  """ Returns the total story progress so far and the 
+  available tasks/challenges for the user to complete."""
   return STORY_PROGRESS
 
 @tool
@@ -459,5 +460,7 @@ while True:
             break
 
         stream_graph_updates(user_input)
-    except:
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        traceback.print_exc()  # Print the full stack trace
         break
