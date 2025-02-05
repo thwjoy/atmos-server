@@ -372,6 +372,17 @@ class State(TypedDict):
     # in the annotation defines how this state key should be updated
     # (in this case, it appends messages to the list, rather than overwriting them)
     messages: Annotated[list, add_messages]
+    user_email: str = None
+
+# # Tool to collect user email
+# def collect_email_tool(state: AgentState, user_input: str):
+#     """
+#     Collects email from the user and stores it in the state.
+#     """
+#     if "@" in user_input and "." in user_input:  # Basic email validation
+#         state.user_email = user_input
+#         return "Thank you! Your email has been recorded."
+#     return "That doesn't look like a valid email. Please provide a valid email address."
 
 
 def tools_condition(
